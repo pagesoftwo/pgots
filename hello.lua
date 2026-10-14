@@ -1,7 +1,8 @@
 --[[
-    [S] Universal Control + Aimbot v13
+    [S] Universal Control + Aimbot v14
     Owners: 1460823186, 7208967899
     Transport: val.town blob
+    Safety: 20s age gate + sync startup drain (no replay on rejoin/re-execute)
 --]]
 
 local OWNERS = { [1460823186] = true, [7208967899] = true }
@@ -21,6 +22,8 @@ local Camera       = workspace.CurrentCamera
 local LP    = Players.LocalPlayer
 local MY_ID = LP.UserId
 local IS_OWNER = OWNERS[MY_ID] == true
+
+local CMD_MAX_AGE = 20  -- seconds; commands older than this are ignored
 
 -- ============================================================
 -- HTTP
@@ -409,27 +412,24 @@ end
 table.insert(MSG_HANDLERS, executeAction)
 
 -- ============================================================
--- Startup drain (no re-execute on reload)
+-- Startup: burn every queued command BEFORE the poll loop starts
 -- ============================================================
-task.spawn(function()
-    task.wait(0.5)
-    pcall(function()
-        local state = readState() or { online = {}, cmd = {} }
-        state.cmd = state.cmd or {}
-        local my = state.cmd[tostring(MY_ID)] or {}
-        for _, c in ipairs(my) do
-            if c.cid then SEEN_CMDS[c.cid] = os.time() end
-        end
-        state.cmd[tostring(MY_ID)] = {}
-        writeState(state)
-    end)
+pcall(function()
+    local state = readState() or { online = {}, cmd = {} }
+    state.cmd = state.cmd or {}
+    local my = state.cmd[tostring(MY_ID)] or {}
+    for _, c in ipairs(my) do
+        if c.cid then SEEN_CMDS[c.cid] = os.time() end
+    end
+    state.cmd[tostring(MY_ID)] = {}
+    writeState(state)
 end)
 
 PERSIST.reapply = false
 LAST_ACTION = nil
 
 -- ============================================================
--- Command poll
+-- Command poll (with age gate)
 -- ============================================================
 task.spawn(function()
     while true do
@@ -442,7 +442,10 @@ task.spawn(function()
                         local cid = c.cid
                         if cid and not SEEN_CMDS[cid] then
                             SEEN_CMDS[cid] = os.time()
-                            for _, h in ipairs(MSG_HANDLERS) do pcall(h, c) end
+                            local age = os.time() - (c.ts or 0)
+                            if age < CMD_MAX_AGE then
+                                for _, h in ipairs(MSG_HANDLERS) do pcall(h, c) end
+                            end
                         end
                     end
                 end
@@ -514,7 +517,7 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- UI helpers (high contrast, white text)
+-- UI helpers
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
