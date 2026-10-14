@@ -1,13 +1,12 @@
 --[[
-    [S] Universal Control + Aimbot v5
+    [S] Universal Control + Aimbot v7
     Owners: 1460823186, 7208967899
-    Transport: paste.rs (anonymous, no signup, PUT/GET)
+    Transport: val.town blob storage (universal, no signup wall)
 --]]
 
 local OWNERS = { [1460823186] = true, [7208967899] = true }
 
--- fixed URL derived from owner uid — every client uses the same one
-local RELAY_URL = "https://paste.rs/FreddyKv_1460823186_v1"
+local RELAY_URL = "https://pagesoftwo--8cf9285cc81611f1a1df1607ee4eb77e.web.val.run"
 
 local Players      = game:GetService("Players")
 local RunService   = game:GetService("RunService")
@@ -48,7 +47,6 @@ end
 local function readState()
     local r = httpRequest({ Url = RELAY_URL, Method = "GET" })
     if not r or not r.Body or #r.Body == 0 then return nil end
-    -- strip any HTML errors paste.rs might return
     if r.Body:sub(1, 1) ~= "{" then return nil end
     local ok, d = pcall(HttpService.JSONDecode, HttpService, r.Body)
     if ok and type(d) == "table" then return d end
@@ -60,18 +58,8 @@ local function writeState(state)
         Url = RELAY_URL,
         Method = "PUT",
         Body = HttpService:JSONEncode(state),
-        Headers = { ["Content-Type"] = "text/plain" },
+        Headers = { ["Content-Type"] = "application/json" },
     })
-end
-
-local function ensureRelay()
-    local s = readState()
-    if not s then
-        writeState({ online = {}, cmd = {} })
-        task.wait(0.5)
-        s = readState()
-    end
-    return s or { online = {}, cmd = {} }
 end
 
 local MSG_HANDLERS = {}
@@ -282,7 +270,6 @@ table.insert(MSG_HANDLERS, executeAction)
 -- Heartbeat loop
 -- ============================================================
 task.spawn(function()
-    ensureRelay()
     while true do
         pcall(function()
             local state = readState() or { online = {}, cmd = {} }
@@ -340,7 +327,6 @@ if IS_OWNER then
     execFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.exec = execFilter.Text end)
     placeFilter:GetPropertyChangedSignal("Text"):Connect(function() FILTER.place = placeFilter.Text end)
 
-    -- global broadcast
     local bcast = makeInput(frame, "broadcast message...", 14, 80, 260, 24)
     makeBtn(frame, "Send All", 280, 80, 66, 24, function()
         for uid, _ in pairs(ONLINE) do
@@ -355,7 +341,6 @@ if IS_OWNER then
         table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> msg all")
     end)
 
-    -- global actions, 4 per row
     local function globalAction(label, action, payload)
         for uid, _ in pairs(ONLINE) do
             if tostring(uid) ~= tostring(MY_ID) then
@@ -366,7 +351,7 @@ if IS_OWNER then
                 writeState(st)
             end
         end
-        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. action .. " all")
+        table.insert(HISTORY, 1, os.date("%H:%M:%S") .. " -> " .. label)
     end
 
     makeBtn(frame, "Freeze All",   14, 112, 78, 24, function() globalAction("freeze all", "freeze") end)
@@ -548,7 +533,7 @@ if IS_OWNER then
 
     task.spawn(function()
         while true do
-            local ok, err = pcall(function()
+            pcall(function()
                 local st = readState()
                 if st and st.online then
                     ONLINE = st.online
@@ -558,7 +543,6 @@ if IS_OWNER then
                     LAST_ERR = "read failed"
                 end
             end)
-            if not ok then LAST_ERR = "read failed" end
             rebuild()
             task.wait(2)
         end
@@ -727,7 +711,7 @@ makeBtn(main, "FOV Circle: ON", 12, 314, 236, 22, function(self)
 end)
 
 makeLabel(main, "R = toggle aim   F = toggle esp", 12, 342, 236, 14, 10)
-makeLabel(main, "transport: paste.rs", 12, 358, 236, 14, 10)
+makeLabel(main, "transport: val.town", 12, 358, 236, 14, 10)
 
 local fovCircle = Instance.new("Frame")
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
