@@ -1,5 +1,5 @@
 --[[
-    [S] Universal Control + Aimbot v12
+    [S] Universal Control + Aimbot v13
     Owners: 1460823186, 7208967899
     Transport: val.town blob
 --]]
@@ -113,7 +113,6 @@ task.spawn(function()
     end
 end)
 
--- re-apply on respawn
 LP.CharacterAdded:Connect(function()
     if PERSIST.reapply and LAST_ACTION then
         task.wait(2)
@@ -363,7 +362,7 @@ local function executeAction(c)
         box.BorderSizePixel = 0
         box.TextColor3 = Color3.fromRGB(255, 255, 255)
         box.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        box.TextStrokeTransparency = 0
+        box.TextStrokeTransparency = 0.15
         box.Font = Enum.Font.GothamBold
         box.TextSize = 15
         box.TextWrapped = true
@@ -410,7 +409,7 @@ end
 table.insert(MSG_HANDLERS, executeAction)
 
 -- ============================================================
--- Startup: drain and burn any queued commands so reload never replays them
+-- Startup drain (no re-execute on reload)
 -- ============================================================
 task.spawn(function()
     task.wait(0.5)
@@ -426,7 +425,6 @@ task.spawn(function()
     end)
 end)
 
--- disarm reapply on startup — only genuine respawns should trigger it
 PERSIST.reapply = false
 LAST_ACTION = nil
 
@@ -516,7 +514,7 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- UI helpers (white text, readable)
+-- UI helpers (high contrast, white text)
 -- ============================================================
 local function makeGui(name)
     local g = Instance.new("ScreenGui")
@@ -555,32 +553,39 @@ local function styleFrame(frame)
 end
 
 local function styleButton(btn)
-    btn.BackgroundColor3 = Color3.fromRGB(70, 40, 110)
+    btn.BackgroundColor3 = Color3.fromRGB(75, 45, 120)
     btn.BorderSizePixel = 0
     btn.TextColor3 = Color3.fromRGB(255, 255, 255)
     btn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    btn.TextStrokeTransparency = 0
+    btn.TextStrokeTransparency = 0.15
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 11
+    btn.TextSize = 13
     btn.AutoButtonColor = false
     btn.Active = true
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(200, 140, 255); s.Thickness = 1.3; s.Transparency = 0; s.Parent = btn
-    local g = Instance.new("UIGradient")
-    g.Color = ColorSequence.new(Color3.fromRGB(100, 60, 155), Color3.fromRGB(55, 30, 90))
-    g.Rotation = 90
-    g.Parent = btn
+    btn.RichText = false
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
+
+    local s = Instance.new("UIStroke")
+    s.Color = Color3.fromRGB(215, 150, 255)
+    s.Thickness = 1.5
+    s.Transparency = 0
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = btn
+
     btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(95, 55, 140) }):Play()
+        btn.BackgroundColor3 = Color3.fromRGB(105, 65, 165)
     end)
     btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(70, 40, 110) }):Play()
+        btn.BackgroundColor3 = Color3.fromRGB(75, 45, 120)
     end)
     btn.MouseButton1Down:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.06), { BackgroundColor3 = Color3.fromRGB(140, 85, 200) }):Play()
+        btn.BackgroundColor3 = Color3.fromRGB(155, 105, 210)
     end)
     btn.MouseButton1Up:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.14), { BackgroundColor3 = Color3.fromRGB(70, 40, 110) }):Play()
+        btn.BackgroundColor3 = Color3.fromRGB(75, 45, 120)
     end)
 end
 
@@ -602,7 +607,7 @@ local function makeLabel(parent, text, x, y, w, h, sz, color)
     l.BackgroundTransparency = 1
     l.TextColor3 = color or Color3.fromRGB(255, 255, 255)
     l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    l.TextStrokeTransparency = 0
+    l.TextStrokeTransparency = 0.15
     l.Font = Enum.Font.GothamBold
     l.TextSize = sz or 12
     l.TextXAlignment = Enum.TextXAlignment.Left
@@ -619,17 +624,22 @@ local function makeInput(parent, placeholder, x, y, w, h)
     t.BorderSizePixel = 0
     t.TextColor3 = Color3.fromRGB(255, 255, 255)
     t.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    t.TextStrokeTransparency = 0
+    t.TextStrokeTransparency = 0.15
     t.PlaceholderColor3 = Color3.fromRGB(200, 175, 230)
     t.Font = Enum.Font.GothamBold
-    t.TextSize = 11
+    t.TextSize = 12
     t.PlaceholderText = placeholder
     t.Text = ""
     t.ClearTextOnFocus = false
     t.Active = true
     t.Parent = parent
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = t
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(190, 130, 255); s.Transparency = 0; s.Parent = t
+    local s = Instance.new("UIStroke")
+    s.Color = Color3.fromRGB(190, 130, 255)
+    s.Thickness = 1.3
+    s.Transparency = 0
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = t
     return t
 end
 
@@ -702,7 +712,7 @@ local function joinServer(placeId, jobId)
     l.BorderSizePixel = 0
     l.TextColor3 = Color3.fromRGB(255, 255, 255)
     l.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    l.TextStrokeTransparency = 0
+    l.TextStrokeTransparency = 0.15
     l.Font = Enum.Font.GothamBold
     l.TextSize = 14
     l.Text = "join link copied — paste in browser"
@@ -807,7 +817,7 @@ if IS_OWNER then
     histLog.BorderSizePixel = 0
     histLog.TextColor3 = Color3.fromRGB(255, 255, 255)
     histLog.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    histLog.TextStrokeTransparency = 0
+    histLog.TextStrokeTransparency = 0.15
     histLog.Font = Enum.Font.Code
     histLog.TextSize = 10
     histLog.TextXAlignment = Enum.TextXAlignment.Left
@@ -1084,7 +1094,7 @@ if IS_OWNER then
                 empty.Size = UDim2.new(1, -8, 0, 30)
                 empty.BackgroundTransparency = 1
                 empty.Parent = scroll
-                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(220, 200, 240))
+                makeLabel(empty, "no clients online...", 4, 6, 300, 18, 12, Color3.fromRGB(255, 255, 255))
             end
         else
             local empty = scroll:FindFirstChild("__emptyMsg")
@@ -1357,7 +1367,7 @@ local function buildEsp(plr)
     nameL.Size = UDim2.new(1, 0, 0, 16)
     nameL.TextColor3 = Color3.fromRGB(255, 255, 255)
     nameL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    nameL.TextStrokeTransparency = 0
+    nameL.TextStrokeTransparency = 0.15
     nameL.Font = Enum.Font.GothamBold
     nameL.TextSize = 12
     nameL.Text = plr.Name
@@ -1370,7 +1380,7 @@ local function buildEsp(plr)
     hpL.Position = UDim2.new(0, 0, 0, 16)
     hpL.TextColor3 = Color3.fromRGB(255, 255, 255)
     hpL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    hpL.TextStrokeTransparency = 0
+    hpL.TextStrokeTransparency = 0.15
     hpL.Font = Enum.Font.GothamBold
     hpL.TextSize = 11
     hpL.Text = "100"
@@ -1383,7 +1393,7 @@ local function buildEsp(plr)
     distL.Position = UDim2.new(0, 0, 0, 30)
     distL.TextColor3 = Color3.fromRGB(255, 255, 255)
     distL.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    distL.TextStrokeTransparency = 0
+    distL.TextStrokeTransparency = 0.15
     distL.Font = Enum.Font.GothamBold
     distL.TextSize = 11
     distL.Text = "0m"
